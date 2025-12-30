@@ -1,7 +1,7 @@
 import SwiftUI
 
 struct LogView: View {
-    @StateObject var viewModel: LogViewModel
+    @ObservedObject var viewModel: LogViewModel
     @FocusState private var isEditorFocused: Bool
 
     var body: some View {
