@@ -70,7 +70,9 @@ struct LogView: View {
         HStack {
             TextField("Filter (#tag, todo:open, &&, ||, !)", text: $viewModel.filterText)
                 .textFieldStyle(.roundedBorder)
+                #if os(iOS)
                 .textInputAutocapitalization(.never)
+                #endif
             Button("Save filter") { viewModel.addSavedFilter(viewModel.filterText) }
                 .buttonStyle(.bordered)
         }
@@ -123,7 +125,9 @@ struct LogView: View {
     private var editor: some View {
         TextEditor(text: $viewModel.fullText)
             .font(.system(.body, design: .monospaced))
+            #if os(iOS)
             .textInputAutocapitalization(.never)
+            #endif
             .disableAutocorrection(true)
             .frame(minHeight: 220)
             .focused($isEditorFocused)
