@@ -100,19 +100,30 @@ struct LogView: View {
 
     private var autosaveIndicator: some View {
         HStack(spacing: 8) {
-            switch viewModel.saveStatus {
-            case .idle:
-                Label("Idle", systemImage: "pause")
-                    .foregroundStyle(.secondary)
-            case .saving:
-                Label("Saving…", systemImage: "arrow.triangle.2.circlepath")
-                    .foregroundStyle(.orange)
-            case .saved:
-                Label("Saved", systemImage: "checkmark")
-                    .foregroundStyle(.green)
-            case .error(let message):
-                Label(message, systemImage: "exclamationmark.triangle")
-                    .foregroundStyle(.red)
+            // Streaming indicator (AI response in progress)
+            if viewModel.isStreaming {
+                HStack(spacing: 4) {
+                    ProgressView()
+                        .controlSize(.small)
+                    Text("AI responding…")
+                        .foregroundStyle(.purple)
+                }
+            } else {
+                // Save status
+                switch viewModel.saveStatus {
+                case .idle:
+                    Label("Idle", systemImage: "pause")
+                        .foregroundStyle(.secondary)
+                case .saving:
+                    Label("Saving…", systemImage: "arrow.triangle.2.circlepath")
+                        .foregroundStyle(.orange)
+                case .saved:
+                    Label("Saved", systemImage: "checkmark")
+                        .foregroundStyle(.green)
+                case .error(let message):
+                    Label(message, systemImage: "exclamationmark.triangle")
+                        .foregroundStyle(.red)
+                }
             }
             Spacer()
             if let filterError = viewModel.filterError {
@@ -157,9 +168,25 @@ struct LogView: View {
 
     private func coloredText(for line: String) -> Text {
         let trimmed = line.trimmingCharacters(in: .whitespaces)
+        let lower = trimmed.lowercased()
+        
+        // AI response tag
+        if lower.hasPrefix(LLMConfig.responseTag.lowercased()) {
+            return Text(line).foregroundColor(.purple)
+        }
+        // Error tag
+        if lower.hasPrefix(LLMConfig.errorTag.lowercased()) {
+            return Text(line).foregroundColor(.red)
+        }
+        // Prompt tag
+        if lower.hasPrefix(LLMConfig.promptTag.lowercased()) {
+            return Text(line).foregroundColor(.blue)
+        }
+        // Other tags (headers)
         if trimmed.hasPrefix("#") {
             return Text(line).foregroundColor(.accentColor)
         }
+        // Lines with inline tags
         if trimmed.contains("#") {
             return Text(line).foregroundColor(.secondary)
         }
