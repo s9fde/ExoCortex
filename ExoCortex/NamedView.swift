@@ -43,9 +43,9 @@ struct NamedView: Identifiable, Codable, Equatable, Hashable {
     /// The default "All" view showing all content
     static let all = NamedView(
         id: UUID(uuidString: "00000000-0000-0000-0000-000000000000")!,
-        name: "All Notes",
+        name: "Worklog",
         filter: "",
-        icon: "doc.text",
+        icon: "book.pages",
         isBuiltIn: true
     )
     
@@ -59,6 +59,56 @@ struct NamedView: Identifiable, Codable, Equatable, Hashable {
         NamedView(name: "Work", filter: "#work", icon: "briefcase"),
         NamedView(name: "Personal", filter: "#personal", icon: "person"),
     ]
+}
+
+// MARK: - Sidebar Category
+
+/// Categories for grouping sidebar items by icon
+enum SidebarCategory: String, CaseIterable, Identifiable {
+    case library = "Library"
+    case tasks = "Tasks"
+    case tags = "Tags"
+    case people = "People"
+    case other = "Other"
+    
+    var id: String { rawValue }
+    
+    /// Icon for the category header
+    var icon: String {
+        switch self {
+        case .library: return "books.vertical"
+        case .tasks: return "checklist"
+        case .tags: return "tag"
+        case .people: return "person.2"
+        case .other: return "square.grid.2x2"
+        }
+    }
+    
+    /// Maps SF Symbol icon names to categories
+    static func category(for icon: String) -> SidebarCategory {
+        switch icon {
+        case "book.pages", "doc.text", "sparkles", "doc.richtext":
+            return .library
+        case "checklist", "checkmark.circle", "checklist.unchecked",
+             "checkmark.circle.fill", "square", "checkmark.square":
+            return .tasks
+        case "person", "person.fill", "person.2", "person.2.fill":
+            return .people
+        case "briefcase", "briefcase.fill", "tag", "tag.fill", "number":
+            return .tags
+        default:
+            return .other
+        }
+    }
+}
+
+// MARK: - NamedView Extensions
+
+extension NamedView {
+    /// The category this view belongs to based on its icon
+    var category: SidebarCategory {
+        SidebarCategory.category(for: icon)
+    }
 }
 
 // MARK: - Views Manager

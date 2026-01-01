@@ -13,14 +13,17 @@ import Security
 
 /// Errors that can occur during keychain operations
 enum KeychainServiceError: Error, LocalizedError {
-    case biometryUnavailable
+    case biometryUnavailable(String)
+    case biometryFailed(String)
     case itemNotFound
     case unexpectedStatus(OSStatus)
     
     var errorDescription: String? {
         switch self {
-        case .biometryUnavailable:
-            return "Biometric authentication unavailable"
+        case .biometryUnavailable(let reason):
+            return "Biometrics unavailable: \(reason)"
+        case .biometryFailed(let reason):
+            return "Biometric auth failed: \(reason)"
         case .itemNotFound:
             return "No stored password found"
         case .unexpectedStatus(let status):
@@ -46,33 +49,44 @@ struct KeychainService {
 
     // MARK: - Public Methods
     
-    /// Save password to keychain with biometric protection
-    /// - Parameter password: The password to store
-    func savePassword(_ password: String) throws {
-        // Remove any existing entry first
-        try deletePassword()
-        
-        // Create access control requiring biometrics
-        var error: Unmanaged<CFError>?
-        guard let access = SecAccessControlCreateWithFlags(
-            nil,
-            kSecAttrAccessibleWhenPasscodeSetThisDeviceOnly,
-            [.biometryCurrentSet, .userPresence],
-            &error
-        ) else {
-            throw error!.takeRetainedValue() as Error
-        }
-
+    /// Check if biometrics are available on this device
+    func biometricsAvailable() -> Bool {
         let context = LAContext()
+        var error: NSError?
+        return context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &error)
+    }
+    
+    /// Save password to keychain for biometric-protected retrieval
+    /// - Parameter password: The password to store
+    /// Note: The password is saved without encryption in the keychain.
+    /// Biometric authentication is required when RETRIEVING the password.
+    func savePassword(_ password: String) throws {
+        // First verify biometrics are available on this device
+        let context = LAContext()
+        var authError: NSError?
+        guard context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &authError) else {
+            let reason = authError?.localizedDescription ?? "Not available"
+            throw KeychainServiceError.biometryUnavailable(reason)
+        }
+        
+        // Remove any existing entry first
+        let deleteQuery: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: account
+        ]
+        SecItemDelete(deleteQuery as CFDictionary)
+
         let data = Data(password.utf8)
         
+        // Save password in keychain (accessible when device is unlocked)
+        // Biometric authentication is enforced when reading via LAContext
         let attributes: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
             kSecValueData as String: data,
-            kSecAttrAccessControl as String: access,
-            kSecUseAuthenticationContext as String: context
+            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly
         ]
 
         let status = SecItemAdd(attributes as CFDictionary, nil)
@@ -84,22 +98,39 @@ struct KeychainService {
     /// Load password from keychain using biometric authentication
     /// - Parameter reason: Reason string shown to user during biometric prompt
     /// - Returns: The stored password
-    func loadPasswordWithBiometrics(reason: String) throws -> String {
+    func loadPasswordWithBiometrics(reason: String) async throws -> String {
         let context = LAContext()
+        context.localizedReason = reason
         
+        // Check if biometrics are available
         var authError: NSError?
         guard context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &authError) else {
-            throw KeychainServiceError.biometryUnavailable
+            let reason = authError?.localizedDescription ?? "Not available"
+            throw KeychainServiceError.biometryUnavailable(reason)
         }
         
-        context.localizedReason = reason
-
+        // Authenticate with biometrics
+        // This triggers the Face ID / Touch ID prompt
+        do {
+            let success = try await context.evaluatePolicy(
+                .deviceOwnerAuthenticationWithBiometrics,
+                localizedReason: reason
+            )
+            guard success else {
+                throw KeychainServiceError.biometryFailed("Authentication returned false")
+            }
+        } catch let laError as LAError {
+            throw KeychainServiceError.biometryFailed(laError.localizedDescription)
+        } catch {
+            throw KeychainServiceError.biometryFailed(error.localizedDescription)
+        }
+        
+        // After successful biometric auth, retrieve from keychain
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
             kSecAttrAccount as String: account,
-            kSecReturnData as String: true,
-            kSecUseAuthenticationContext as String: context
+            kSecReturnData as String: true
         ]
 
         var item: CFTypeRef?

@@ -16,6 +16,8 @@ import AppKit
 /// A styled text editor using NSTextView for macOS with syntax highlighting
 struct StyledTextEditor: NSViewRepresentable {
     @Binding var text: String
+    var searchTerm: String = ""
+    var currentMatchIndex: Int = 0
     var onTodoToggle: ((Int) -> Void)?
     
     func makeNSView(context: Context) -> NSScrollView {
@@ -57,22 +59,36 @@ struct StyledTextEditor: NSViewRepresentable {
             textView.selectedRanges = selectedRanges
         }
         
-        // Apply syntax highlighting
+        // Update search term in coordinator
+        context.coordinator.searchTerm = searchTerm
+        context.coordinator.currentMatchIndex = currentMatchIndex
+        
+        // Apply syntax highlighting with search highlighting
         context.coordinator.applySyntaxHighlighting()
+        
+        // Scroll to current match if searching
+        if !searchTerm.isEmpty {
+            context.coordinator.scrollToCurrentMatch()
+        }
     }
     
     func makeCoordinator() -> Coordinator {
-        Coordinator(text: $text, onTodoToggle: onTodoToggle)
+        Coordinator(text: $text, searchTerm: searchTerm, currentMatchIndex: currentMatchIndex, onTodoToggle: onTodoToggle)
     }
     
     class Coordinator: NSObject, NSTextViewDelegate {
         var text: Binding<String>
+        var searchTerm: String
+        var currentMatchIndex: Int
         var onTodoToggle: ((Int) -> Void)?
         weak var textView: NSTextView?
         private var isUpdating = false
+        private var searchMatches: [NSRange] = []
         
-        init(text: Binding<String>, onTodoToggle: ((Int) -> Void)?) {
+        init(text: Binding<String>, searchTerm: String, currentMatchIndex: Int, onTodoToggle: ((Int) -> Void)?) {
             self.text = text
+            self.searchTerm = searchTerm
+            self.currentMatchIndex = currentMatchIndex
             self.onTodoToggle = onTodoToggle
         }
         
@@ -127,7 +143,8 @@ struct StyledTextEditor: NSViewRepresentable {
             let defaultFont = NSFont.monospacedSystemFont(ofSize: 14, weight: .regular)
             textStorage.setAttributes([
                 .font: defaultFont,
-                .foregroundColor: NSColor.textColor
+                .foregroundColor: NSColor.textColor,
+                .backgroundColor: NSColor.clear
             ], range: fullRange)
             
             // Apply syntax highlighting line by line
@@ -140,10 +157,56 @@ struct StyledTextEditor: NSViewRepresentable {
                 currentIndex += line.utf16.count + 1 // +1 for newline
             }
             
+            // Apply search highlighting on top of syntax highlighting
+            applySearchHighlighting(text: text, textStorage: textStorage)
+            
             textStorage.endEditing()
             
             // Restore selection
             textView.selectedRanges = selectedRanges
+        }
+        
+        /// Apply yellow background to search matches, with strong yellow for current match (marker-style)
+        private func applySearchHighlighting(text: String, textStorage: NSTextStorage) {
+            searchMatches = []
+            
+            guard !searchTerm.isEmpty else { return }
+            
+            // Find all matches
+            var searchRange = text.startIndex..<text.endIndex
+            while let range = text.range(of: searchTerm, options: .caseInsensitive, range: searchRange) {
+                let nsRange = NSRange(range, in: text)
+                searchMatches.append(nsRange)
+                searchRange = range.upperBound..<text.endIndex
+            }
+            
+            // Highlight all matches with yellow background (marker-style)
+            for (index, match) in searchMatches.enumerated() {
+                let backgroundColor: NSColor
+                if index == currentMatchIndex {
+                    // Current match - strong yellow like a highlighter marker
+                    backgroundColor = NSColor(calibratedRed: 1.0, green: 0.95, blue: 0.0, alpha: 0.85)
+                } else {
+                    // Other matches - subtle yellow background
+                    backgroundColor = NSColor(calibratedRed: 1.0, green: 1.0, blue: 0.6, alpha: 0.5)
+                }
+                textStorage.addAttribute(.backgroundColor, value: backgroundColor, range: match)
+            }
+        }
+        
+        /// Scroll the text view to show the current search match
+        @MainActor func scrollToCurrentMatch() {
+            guard let textView = textView else { return }
+            guard !searchMatches.isEmpty else { return }
+            guard currentMatchIndex >= 0 && currentMatchIndex < searchMatches.count else { return }
+            
+            let matchRange = searchMatches[currentMatchIndex]
+            
+            // Scroll to make the match visible
+            textView.scrollRangeToVisible(matchRange)
+            
+            // Optionally also select the match
+            textView.setSelectedRange(matchRange)
         }
         
         private func applyLineStyles(line: String, lineNumber: Int, range: NSRange, textStorage: NSTextStorage) {

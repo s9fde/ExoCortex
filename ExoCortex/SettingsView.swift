@@ -121,6 +121,13 @@ struct SettingsView: View {
             } label: {
                 Label("Clear Saved Password", systemImage: "key.slash")
             }
+            
+            if let status = viewModel.keychainStatus {
+                Text(status)
+                    .font(.caption)
+                    .foregroundStyle(status.contains("saved") || status.contains("cleared") ? .green : .red)
+                    .textSelection(.enabled)
+            }
         }
     }
     

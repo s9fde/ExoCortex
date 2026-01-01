@@ -23,23 +23,22 @@ struct ExoCortexApp: App {
         WindowGroup {
             ContentView()
                 .environmentObject(viewModel)
+                #if os(iOS)
                 .onChange(of: scenePhase) { _, newPhase in
-                    // Auto-lock when app goes to background (iOS)
-                    if newPhase != .active {
+                    // iOS: Only lock when app goes to background (not just inactive)
+                    // This prevents locking when opening notification center or control center
+                    if newPhase == .background {
                         viewModel.lock()
                     }
                 }
+                #endif
                 #if os(macOS)
                 .onReceive(NotificationCenter.default.publisher(for: NSWindow.willCloseNotification)) { notification in
-                    // Auto-lock when window closes (macOS)
-                    // Check if it's our main window
+                    // macOS: Only lock when window closes (not on focus lost)
+                    // Users can switch between apps without losing their work
                     if notification.object is NSWindow {
                         viewModel.lock()
                     }
-                }
-                .onReceive(NotificationCenter.default.publisher(for: NSApplication.willResignActiveNotification)) { _ in
-                    // Auto-lock when switching to another app (macOS)
-                    viewModel.lock()
                 }
                 #endif
         }

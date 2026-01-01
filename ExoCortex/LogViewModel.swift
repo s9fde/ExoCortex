@@ -39,6 +39,7 @@ final class LogViewModel: ObservableObject {
     @Published var isLocked = true
     @Published var isLoading = false
     @Published var password = ""
+    @Published var keychainStatus: String?
     @Published var fullText = "" {
         didSet { textDidChange(oldValue: oldValue) }
     }
@@ -97,8 +98,10 @@ final class LogViewModel: ObservableObject {
     func unlockWithBiometrics() {
         Task {
             do {
-                let retrieved = try keychain.loadPasswordWithBiometrics(reason: "Unlock ExoCortex")
+                let retrieved = try await keychain.loadPasswordWithBiometrics(reason: "Unlock ExoCortex")
                 await unlock(using: retrieved)
+            } catch let error as KeychainServiceError {
+                unlockError = error.localizedDescription
             } catch {
                 unlockError = "Biometric unlock failed"
             }
@@ -118,15 +121,31 @@ final class LogViewModel: ObservableObject {
         saveStatus = .idle
     }
 
-    /// Store password in keychain with biometric protection
+    /// Store password in keychain with biometric protection for later retrieval
     func rememberPasswordInKeychain() {
-        guard let pwd = activePassword, !pwd.isEmpty else { return }
-        try? keychain.savePassword(pwd)
+        guard let pwd = activePassword, !pwd.isEmpty else {
+            keychainStatus = "No password to save"
+            return
+        }
+        keychainStatus = nil
+        do {
+            try keychain.savePassword(pwd)
+            keychainStatus = "Password saved - use biometrics to unlock"
+        } catch let error as KeychainServiceError {
+            keychainStatus = error.localizedDescription
+        } catch {
+            keychainStatus = "Failed: \(error.localizedDescription)"
+        }
     }
 
     /// Remove stored password from keychain
     func clearKeychainPassword() {
-        try? keychain.deletePassword()
+        do {
+            try keychain.deletePassword()
+            keychainStatus = "Saved password cleared"
+        } catch {
+            keychainStatus = "Failed to clear password"
+        }
     }
 
     // MARK: - Filter Management
