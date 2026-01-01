@@ -18,7 +18,7 @@ enum LLMConfig {
     
     /// Your OpenRouter API key - get one at https://openrouter.ai/keys
     /// ⚠️ Replace with your actual API key before use
-    static let apiKey = "sk-or-v1-YOUR_API_KEY_HERE"
+    static let apiKey = "YOUR_API_KEY_HERE"
     
     /// The model to use for AI responses
     /// Options: "anthropic/claude-opus-4.5", "anthropic/claude-sonnet-4", etc.
