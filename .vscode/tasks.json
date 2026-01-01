@@ -1,0 +1,15 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Build & Run ExoCortex",
+      "type": "shell",
+      "command": "pkill -x ExoCortex 2>/dev/null; xcodebuild -project ExoCortex.xcodeproj -scheme ExoCortex -destination 'platform=macOS' -configuration Debug build && open ~/Library/Developer/Xcode/DerivedData/ExoCortex-*/Build/Products/Debug/ExoCortex.app",
+      "problemMatcher": [],
+      "group": {
+        "kind": "build",
+        "isDefault": true,
+      },
+    },
+  ],
+}
