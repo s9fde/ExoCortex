@@ -79,9 +79,11 @@ struct LockScreen: View {
             Image(systemName: "brain.head.profile")
                 .font(.system(size: 64))
                 .foregroundStyle(.tint)
+                .accessibilityHidden(true)
             
             Text("ExoCortex")
                 .font(.system(size: 28, weight: .semibold, design: .rounded))
+                .accessibilityAddTraits(.isHeader)
             
             Text("Encrypted Work Log")
                 .font(.subheadline)
@@ -116,6 +118,8 @@ struct LockScreen: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(viewModel.password.isEmpty || viewModel.isLoading)
+                .accessibilityLabel("Unlock with password")
+                .accessibilityHint("Decrypts and opens your work log")
                 
                 Button {
                     viewModel.unlockWithBiometrics()
@@ -123,13 +127,19 @@ struct LockScreen: View {
                     Image(systemName: "faceid")
                 }
                 .buttonStyle(.bordered)
+                .accessibilityLabel("Unlock with Face ID")
+                .accessibilityHint("Use biometric authentication to unlock")
             }
             
             Spacer()
             Spacer()
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
+        #if os(macOS)
         .background(Color(nsColor: .windowBackgroundColor))
+        #else
+        .background(Color(uiColor: .systemBackground))
+        #endif
     }
 }
 
@@ -365,7 +375,11 @@ struct LogEditorView: View {
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
+        #if os(macOS)
         .background(Color(nsColor: .textBackgroundColor))
+        #else
+        .background(Color(uiColor: .secondarySystemBackground))
+        #endif
     }
     
     // MARK: - Status Bar
@@ -394,18 +408,22 @@ struct LogEditorView: View {
             Label("Ready", systemImage: "circle")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+                .accessibilityLabel("Status: Ready")
         case .saving:
             Label("Saving…", systemImage: "arrow.triangle.2.circlepath")
                 .font(.caption)
                 .foregroundStyle(.orange)
+                .accessibilityLabel("Status: Saving changes")
         case .saved:
             Label("Saved", systemImage: "checkmark.circle.fill")
                 .font(.caption)
                 .foregroundStyle(.green)
+                .accessibilityLabel("Status: All changes saved")
         case .error(let message):
             Label(message, systemImage: "exclamationmark.triangle.fill")
                 .font(.caption)
                 .foregroundStyle(.red)
+                .accessibilityLabel("Error: \(message)")
         }
     }
     

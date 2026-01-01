@@ -2,14 +2,21 @@
   "version": "2.0.0",
   "tasks": [
     {
-      "label": "Build & Run ExoCortex",
+      "label": "Build & Run ExoCortex (macOS)",
       "type": "shell",
       "command": "pkill -x ExoCortex 2>/dev/null; xcodebuild -project ExoCortex.xcodeproj -scheme ExoCortex -destination 'platform=macOS' -configuration Debug build && open ~/Library/Developer/Xcode/DerivedData/ExoCortex-*/Build/Products/Debug/ExoCortex.app",
       "problemMatcher": [],
       "group": {
         "kind": "build",
-        "isDefault": true,
-      },
+        "isDefault": true
+      }
     },
-  ],
+    {
+      "label": "Build & Run ExoCortex (iPhone Simulator)",
+      "type": "shell",
+      "command": "xcrun simctl boot 'iPhone 16 Pro' 2>/dev/null || true; xcodebuild -project ExoCortex.xcodeproj -scheme ExoCortex -destination 'platform=iOS Simulator,name=iPhone 16 Pro' -configuration Debug build && xcrun simctl install booted ~/Library/Developer/Xcode/DerivedData/ExoCortex-*/Build/Products/Debug-iphonesimulator/ExoCortex.app && xcrun simctl launch booted com.s9f.ExoCortex && open -a Simulator",
+      "problemMatcher": [],
+      "group": "build"
+    }
+  ]
 }

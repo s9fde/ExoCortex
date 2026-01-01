@@ -411,9 +411,11 @@ import UIKit
 
 // MARK: - iOS Styled Text Editor
 
-/// A styled text editor using UITextView for iOS with syntax highlighting
+/// A styled text editor using UITextView for iOS with syntax highlighting and search support
 struct StyledTextEditor: UIViewRepresentable {
     @Binding var text: String
+    var searchTerm: String = ""
+    var currentMatchIndex: Int = 0
     var onTodoToggle: ((Int) -> Void)?
     
     func makeUIView(context: Context) -> UITextView {
@@ -440,21 +442,36 @@ struct StyledTextEditor: UIViewRepresentable {
             textView.text = text
             textView.selectedRange = selectedRange
         }
+        
+        // Update search state in coordinator
+        context.coordinator.searchTerm = searchTerm
+        context.coordinator.currentMatchIndex = currentMatchIndex
+        
         context.coordinator.applySyntaxHighlighting()
+        
+        // Scroll to current match if searching
+        if !searchTerm.isEmpty {
+            context.coordinator.scrollToCurrentMatch()
+        }
     }
     
     func makeCoordinator() -> Coordinator {
-        Coordinator(text: $text, onTodoToggle: onTodoToggle)
+        Coordinator(text: $text, searchTerm: searchTerm, currentMatchIndex: currentMatchIndex, onTodoToggle: onTodoToggle)
     }
     
     class Coordinator: NSObject, UITextViewDelegate {
         var text: Binding<String>
+        var searchTerm: String
+        var currentMatchIndex: Int
         var onTodoToggle: ((Int) -> Void)?
         weak var textView: UITextView?
         private var isUpdating = false
+        private var searchMatches: [NSRange] = []
         
-        init(text: Binding<String>, onTodoToggle: ((Int) -> Void)?) {
+        init(text: Binding<String>, searchTerm: String, currentMatchIndex: Int, onTodoToggle: ((Int) -> Void)?) {
             self.text = text
+            self.searchTerm = searchTerm
+            self.currentMatchIndex = currentMatchIndex
             self.onTodoToggle = onTodoToggle
         }
         
@@ -502,8 +519,50 @@ struct StyledTextEditor: UIViewRepresentable {
                 currentIndex += line.utf16.count + 1
             }
             
+            // Apply search highlighting on top of syntax highlighting
+            applySearchHighlighting(text: text, attributedString: attributedString)
+            
             textView.attributedText = attributedString
             textView.selectedRange = selectedRange
+        }
+        
+        /// Apply yellow background to search matches, with strong yellow for current match
+        private func applySearchHighlighting(text: String, attributedString: NSMutableAttributedString) {
+            searchMatches = []
+            
+            guard !searchTerm.isEmpty else { return }
+            
+            // Find all matches
+            var searchRange = text.startIndex..<text.endIndex
+            while let range = text.range(of: searchTerm, options: .caseInsensitive, range: searchRange) {
+                let nsRange = NSRange(range, in: text)
+                searchMatches.append(nsRange)
+                searchRange = range.upperBound..<text.endIndex
+            }
+            
+            // Highlight all matches with yellow background
+            for (index, match) in searchMatches.enumerated() {
+                let backgroundColor: UIColor
+                if index == currentMatchIndex {
+                    // Current match - strong yellow like a highlighter marker
+                    backgroundColor = UIColor(red: 1.0, green: 0.95, blue: 0.0, alpha: 0.85)
+                } else {
+                    // Other matches - subtle yellow background
+                    backgroundColor = UIColor(red: 1.0, green: 1.0, blue: 0.6, alpha: 0.5)
+                }
+                attributedString.addAttribute(.backgroundColor, value: backgroundColor, range: match)
+            }
+        }
+        
+        /// Scroll the text view to show the current search match
+        func scrollToCurrentMatch() {
+            guard let textView = textView else { return }
+            guard !searchMatches.isEmpty else { return }
+            guard currentMatchIndex >= 0 && currentMatchIndex < searchMatches.count else { return }
+            
+            let matchRange = searchMatches[currentMatchIndex]
+            textView.scrollRangeToVisible(matchRange)
+            textView.selectedRange = matchRange
         }
         
         private func applyLineStyles(line: String, lineNumber: Int, range: NSRange, attributedString: NSMutableAttributedString) {
@@ -544,8 +603,8 @@ struct StyledTextEditor: UIViewRepresentable {
                 return
             }
             
-            // Separator
-            if trimmed == "---" || trimmed == "***" {
+            // Separator lines (horizontal rules)
+            if trimmed == "---" || trimmed == "***" || trimmed == "___" {
                 attributedString.addAttribute(.foregroundColor, value: UIColor.tertiaryLabel, range: range)
                 return
             }

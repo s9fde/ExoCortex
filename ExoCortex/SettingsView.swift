@@ -115,18 +115,21 @@ struct SettingsView: View {
             } label: {
                 Label("Save Password with Biometrics", systemImage: "faceid")
             }
+            .accessibilityHint("Stores your password securely for Face ID or Touch ID unlock")
             
             Button(role: .destructive) {
                 viewModel.clearKeychainPassword()
             } label: {
                 Label("Clear Saved Password", systemImage: "key.slash")
             }
+            .accessibilityHint("Removes the stored password from the keychain")
             
             if let status = viewModel.keychainStatus {
                 Text(status)
                     .font(.caption)
                     .foregroundStyle(status.contains("saved") || status.contains("cleared") ? .green : .red)
                     .textSelection(.enabled)
+                    .accessibilityLabel("Keychain status: \(status)")
             }
         }
     }
