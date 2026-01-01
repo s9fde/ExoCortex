@@ -261,6 +261,16 @@ struct LogEditorView: View {
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button {
+                    viewModel.insertDateLine()
+                } label: {
+                    Image(systemName: "calendar.badge.plus")
+                }
+                .help("Insert date separator (--- YYYY-MM-DD ---)")
+                .keyboardShortcut("d", modifiers: [.command, .shift])
+            }
+            
+            ToolbarItem(placement: .primaryAction) {
+                Button {
                     isSearchVisible.toggle()
                     if !isSearchVisible {
                         searchText = ""

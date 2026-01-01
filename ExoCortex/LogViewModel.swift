@@ -199,6 +199,16 @@ final class LogViewModel: ObservableObject {
         streamTask = nil
         isStreaming = false
     }
+    
+    /// Insert a date separator line at the end of the log
+    /// Format: --- YYYY-MM-DD --- for LLM temporal context
+    func insertDateLine() {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyy-MM-dd"
+        let dateString = formatter.string(from: Date())
+        let dateLine = "\n--- \(dateString) ---\n"
+        fullText += dateLine
+    }
 
     // MARK: - Private Methods
     

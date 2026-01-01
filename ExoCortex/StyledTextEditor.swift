@@ -246,6 +246,14 @@ struct StyledTextEditor: NSViewRepresentable {
                 return
             }
             
+            // Date separator lines (--- YYYY-MM-DD ---)
+            let dateSeparatorPattern = "^---\\s*\\d{4}-\\d{2}-\\d{2}\\s*---$"
+            if let regex = try? NSRegularExpression(pattern: dateSeparatorPattern),
+               regex.firstMatch(in: trimmed, range: NSRange(location: 0, length: trimmed.utf16.count)) != nil {
+                textStorage.addAttribute(.foregroundColor, value: NSColor.systemTeal, range: range)
+                return
+            }
+            
             // Separator lines
             if trimmed == "---" || trimmed == "***" || trimmed == "___" {
                 textStorage.addAttribute(.foregroundColor, value: NSColor.tertiaryLabelColor, range: range)
@@ -525,6 +533,14 @@ struct StyledTextEditor: UIViewRepresentable {
                 let headerFont = UIFont.monospacedSystemFont(ofSize: 16, weight: .bold)
                 attributedString.addAttribute(.font, value: headerFont, range: range)
                 attributedString.addAttribute(.foregroundColor, value: UIColor.systemBlue, range: range)
+                return
+            }
+            
+            // Date separator lines (--- YYYY-MM-DD ---)
+            let dateSeparatorPattern = "^---\\s*\\d{4}-\\d{2}-\\d{2}\\s*---$"
+            if let regex = try? NSRegularExpression(pattern: dateSeparatorPattern),
+               regex.firstMatch(in: trimmed, range: NSRange(location: 0, length: trimmed.utf16.count)) != nil {
+                attributedString.addAttribute(.foregroundColor, value: UIColor.systemTeal, range: range)
                 return
             }
             
