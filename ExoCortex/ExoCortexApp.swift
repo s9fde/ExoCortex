@@ -16,7 +16,7 @@ struct ExoCortexApp: App {
     /// Shared view model managing log state, encryption, and AI interactions
     @StateObject private var viewModel = LogViewModel()
     
-    /// App lifecycle phase for auto-locking on background
+    /// App lifecycle phase for auto-locking
     @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {
@@ -24,11 +24,32 @@ struct ExoCortexApp: App {
             ContentView()
                 .environmentObject(viewModel)
                 .onChange(of: scenePhase) { _, newPhase in
-                    // Auto-lock when app goes to background for security
+                    // Auto-lock when app goes to background (iOS)
                     if newPhase != .active {
                         viewModel.lock()
                     }
                 }
+                #if os(macOS)
+                .onReceive(NotificationCenter.default.publisher(for: NSWindow.willCloseNotification)) { notification in
+                    // Auto-lock when window closes (macOS)
+                    // Check if it's our main window
+                    if notification.object is NSWindow {
+                        viewModel.lock()
+                    }
+                }
+                .onReceive(NotificationCenter.default.publisher(for: NSApplication.willResignActiveNotification)) { _ in
+                    // Auto-lock when switching to another app (macOS)
+                    viewModel.lock()
+                }
+                #endif
         }
+        #if os(macOS)
+        .windowStyle(.titleBar)
+        .windowToolbarStyle(.unified)
+        .commands {
+            CommandGroup(replacing: .appInfo) { }
+            CommandGroup(replacing: .newItem) { }
+        }
+        #endif
     }
 }

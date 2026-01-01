@@ -82,7 +82,9 @@ struct StyledTextEditor: NSViewRepresentable {
             
             isUpdating = true
             text.wrappedValue = textView.string
-            applySyntaxHighlighting()
+            Task { @MainActor in
+                applySyntaxHighlighting()
+            }
             isUpdating = false
         }
         
@@ -108,7 +110,7 @@ struct StyledTextEditor: NSViewRepresentable {
             return false
         }
         
-        func applySyntaxHighlighting() {
+        @MainActor func applySyntaxHighlighting() {
             guard let textView = textView else { return }
             guard let textStorage = textView.textStorage else { return }
             
