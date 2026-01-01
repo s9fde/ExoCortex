@@ -1,9 +1,24 @@
+//
+//  LogViewModel.swift
+//  ExoCortex
+//
+//  View model managing log state, encryption, filtering, and AI interactions.
+//
+
 import Foundation
 import Combine
 import LocalAuthentication
 
+// MARK: - Log View Model
+
+/// Main view model orchestrating log functionality including encryption,
+/// filtering, todo management, and AI prompt processing.
 @MainActor
 final class LogViewModel: ObservableObject {
+    
+    // MARK: - Types
+    
+    /// Current state of the autosave operation
     enum SaveStatus: Equatable {
         case idle
         case saving
@@ -11,20 +26,23 @@ final class LogViewModel: ObservableObject {
         case error(String)
     }
 
+    /// Represents a single line in the filtered view
     struct LineItem: Identifiable, Equatable {
-        let id: Int
+        let id: Int      // Line index in fullText
         let text: String
         let isTodo: Bool
         let isDone: Bool
     }
 
-    @Published var isLocked: Bool = true
-    @Published var isLoading: Bool = false
-    @Published var password: String = ""
-    @Published var fullText: String = "" {
+    // MARK: - Published State
+    
+    @Published var isLocked = true
+    @Published var isLoading = false
+    @Published var password = ""
+    @Published var fullText = "" {
         didSet { textDidChange(oldValue: oldValue) }
     }
-    @Published var filterText: String = "" {
+    @Published var filterText = "" {
         didSet { applyFilter() }
     }
     @Published var filteredLines: [LineItem] = []
@@ -32,21 +50,26 @@ final class LogViewModel: ObservableObject {
     @Published var unlockError: String?
     @Published var filterError: String?
     @Published var saveStatus: SaveStatus = .idle
-    
-    /// Indicates AI is currently streaming a response
-    @Published var isStreaming: Bool = false
+    @Published var isStreaming = false
 
+    // MARK: - Dependencies
+    
     private let repository: LogRepository
     private let keychain: KeychainService
     private let parser = TagQueryParser()
     private let openRouter = OpenRouterService()
     private let contextResolver = ContextResolver()
     
+    // MARK: - Private State
+    
     private var activePassword: String?
     private var saveWorkItem: DispatchWorkItem?
     private var streamTask: Task<Void, Never>?
-    private var previousText: String = ""
+    private var previousText = ""
+    private var isStreamingAppend = false
 
+    // MARK: - Initialization
+    
     init(repository: LogRepository, keychain: KeychainService) {
         self.repository = repository
         self.keychain = keychain
@@ -57,24 +80,32 @@ final class LogViewModel: ObservableObject {
         self.init(repository: LogRepository(), keychain: KeychainService())
     }
 
+    // MARK: - Authentication
+    
+    /// Attempt unlock with entered password
     func unlockWithPassword() {
         let input = password
-        guard !input.isEmpty else { unlockError = "Password required"; return }
+        guard !input.isEmpty else {
+            unlockError = "Password required"
+            return
+        }
         unlockError = nil
         Task { await unlock(using: input) }
     }
 
+    /// Attempt unlock using biometric authentication
     func unlockWithBiometrics() {
         Task {
             do {
                 let retrieved = try keychain.loadPasswordWithBiometrics(reason: "Unlock ExoCortex")
                 await unlock(using: retrieved)
             } catch {
-                await MainActor.run { self.unlockError = "Biometric unlock failed" }
+                unlockError = "Biometric unlock failed"
             }
         }
     }
 
+    /// Lock the log and clear sensitive data
     func lock() {
         cancelStream()
         saveWorkItem?.cancel()
@@ -87,83 +118,87 @@ final class LogViewModel: ObservableObject {
         saveStatus = .idle
     }
 
+    /// Store password in keychain with biometric protection
     func rememberPasswordInKeychain() {
         guard let pwd = activePassword, !pwd.isEmpty else { return }
-        do {
-            try keychain.savePassword(pwd)
-        } catch {
-            // ignore silently for now
-        }
+        try? keychain.savePassword(pwd)
     }
 
+    /// Remove stored password from keychain
     func clearKeychainPassword() {
         try? keychain.deletePassword()
     }
 
+    // MARK: - Filter Management
+    
+    /// Add a new saved filter
     func addSavedFilter(_ filter: String) {
         let trimmed = filter.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return }
-        if !savedFilters.contains(trimmed) {
-            savedFilters.append(trimmed)
-            persistFilters()
-        }
+        guard !trimmed.isEmpty, !savedFilters.contains(trimmed) else { return }
+        savedFilters.append(trimmed)
+        persistFilters()
     }
 
+    /// Remove a saved filter
     func removeSavedFilter(_ filter: String) {
         savedFilters.removeAll { $0 == filter }
         persistFilters()
     }
 
+    /// Apply a saved filter to the current view
     func applySavedFilter(_ filter: String) {
         filterText = filter
     }
 
+    // MARK: - Todo Management
+    
+    /// Toggle a todo item between open and done states
     func toggleTodo(for lineID: Int) {
         let lines = fullText.components(separatedBy: "\n")
         guard lineID >= 0 && lineID < lines.count else { return }
+        
         var mutable = lines
         let line = mutable[lineID]
+        
+        // Toggle between [ ] and [x]
         let updated: String
-        if line.range(of: "[ ]") != nil {
-            updated = line.replacingOccurrences(of: "[ ]", with: "[x]", options: .literal, range: line.range(of: "[ ]"))
-        } else if line.range(of: "[x]", options: [.caseInsensitive]) != nil {
-            updated = line.replacingOccurrences(of: "[x]", with: "[ ]", options: [.caseInsensitive], range: line.range(of: "[x]", options: [.caseInsensitive]))
+        if let range = line.range(of: "[ ]") {
+            updated = line.replacingCharacters(in: range, with: "[x]")
+        } else if let range = line.range(of: "[x]", options: .caseInsensitive) {
+            updated = line.replacingCharacters(in: range, with: "[ ]")
         } else {
-            updated = line
+            return
         }
+        
         mutable[lineID] = updated
         fullText = mutable.joined(separator: "\n")
     }
     
-    /// Cancel any ongoing stream (user started typing)
+    /// Cancel any ongoing AI stream
     func cancelStream() {
         streamTask?.cancel()
         streamTask = nil
         isStreaming = false
     }
 
-    // MARK: - Private
-
+    // MARK: - Private Methods
+    
     private func unlock(using password: String) async {
-        await MainActor.run { self.isLoading = true }
+        isLoading = true
         do {
             let text = try await repository.load(password: password)
-            await MainActor.run {
-                self.activePassword = password
-                self.previousText = text
-                self.fullText = text
-                self.isLocked = false
-                self.saveStatus = .saved
-                self.unlockError = nil
-                self.applyFilter()
-            }
+            activePassword = password
+            previousText = text
+            fullText = text
+            isLocked = false
+            saveStatus = .saved
+            unlockError = nil
+            applyFilter()
         } catch {
-            await MainActor.run {
-                self.unlockError = "Invalid password or data"
-                self.isLocked = true
-            }
+            unlockError = "Invalid password or data"
+            isLocked = true
         }
-        await MainActor.run { self.isLoading = false }
+        isLoading = false
     }
 
     private func textDidChange(oldValue: String) {
@@ -174,23 +209,19 @@ final class LogViewModel: ObservableObject {
         
         applyFilter()
         scheduleAutosave()
-        
-        // Check for prompt trigger (newline after #p line)
         detectAndProcessPrompt(oldText: oldValue, newText: fullText)
-        
         previousText = fullText
     }
-    
-    /// Flag to differentiate streaming appends from user edits
-    private var isStreamingAppend = false
 
     private func applyFilter() {
         let trimmed = filterText.trimmingCharacters(in: .whitespacesAndNewlines)
+        
         guard !trimmed.isEmpty else {
             filterError = nil
             filteredLines = enumerateLines(matching: nil)
             return
         }
+        
         if let node = parser.parse(trimmed) {
             filterError = nil
             filteredLines = enumerateLines(matching: node)
@@ -201,22 +232,19 @@ final class LogViewModel: ObservableObject {
     }
 
     private func enumerateLines(matching node: TagQueryParser.Node?) -> [LineItem] {
-        let lines = fullText.components(separatedBy: "\n")
-        var result: [LineItem] = []
-        for (idx, line) in lines.enumerated() {
-            if parser.matches(node: node, line: line) {
-                let lower = line.lowercased()
-                let isDone = lower.contains("[x]")
-                let isTodo = lower.contains("[ ]") || isDone
-                result.append(LineItem(id: idx, text: line, isTodo: isTodo, isDone: isDone))
-            }
+        fullText.components(separatedBy: "\n").enumerated().compactMap { idx, line in
+            guard parser.matches(node: node, line: line) else { return nil }
+            let lower = line.lowercased()
+            let isDone = lower.contains("[x]")
+            let isTodo = lower.contains("[ ]") || isDone
+            return LineItem(id: idx, text: line, isTodo: isTodo, isDone: isDone)
         }
-        return result
     }
 
     private func scheduleAutosave() {
         guard !isLocked else { return }
         saveWorkItem?.cancel()
+        
         let workItem = DispatchWorkItem { [weak self] in
             Task { await self?.performAutosave() }
         }
@@ -226,12 +254,12 @@ final class LogViewModel: ObservableObject {
 
     private func performAutosave() async {
         guard let password = activePassword else { return }
-        await MainActor.run { self.saveStatus = .saving }
+        saveStatus = .saving
         do {
             try await repository.save(text: fullText, password: password)
-            await MainActor.run { self.saveStatus = .saved }
+            saveStatus = .saved
         } catch {
-            await MainActor.run { self.saveStatus = .error(error.localizedDescription) }
+            saveStatus = .error(error.localizedDescription)
         }
     }
 
@@ -239,45 +267,52 @@ final class LogViewModel: ObservableObject {
         UserDefaults.standard.set(savedFilters, forKey: "savedFilters")
     }
     
-    // MARK: - LLM Prompt Detection & Processing
+    // MARK: - LLM Integration
     
     private func detectAndProcessPrompt(oldText: String, newText: String) {
-        // Only trigger if a newline was just added
-        guard newText.count > oldText.count else { return }
-        guard newText.hasSuffix("\n") || newText.last?.isNewline == true else { return }
-        
-        // Don't trigger if already streaming
         guard !isStreaming else { return }
+        
+        // Check if a newline was added (Enter key pressed)
+        let oldNewlineCount = oldText.filter { $0 == "\n" }.count
+        let newNewlineCount = newText.filter { $0 == "\n" }.count
+        guard newNewlineCount > oldNewlineCount else { return }
         
         let lines = newText.components(separatedBy: "\n")
         
-        // Find the line that was just completed (second to last, since last is empty after newline)
-        guard lines.count >= 2 else { return }
-        let completedLine = lines[lines.count - 2]
-        
-        // Check if the completed line starts with #p
-        let trimmed = completedLine.trimmingCharacters(in: .whitespaces)
-        guard trimmed.lowercased().hasPrefix(LLMConfig.promptTag.lowercased()) else { return }
-        
-        // Extract prompt text (everything after #p)
-        let promptIndex = trimmed.index(trimmed.startIndex, offsetBy: LLMConfig.promptTag.count)
-        let promptText = String(trimmed[promptIndex...]).trimmingCharacters(in: .whitespaces)
-        
-        // Don't process empty prompts
-        guard !promptText.isEmpty else { return }
-        
-        // Start processing the prompt
-        processPrompt(promptText)
+        // Find unprocessed #p prompts
+        for (index, line) in lines.enumerated() {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            guard trimmed.lowercased().hasPrefix(LLMConfig.promptTag.lowercased()) else { continue }
+            guard index + 1 < lines.count else { continue }
+            
+            let nextLine = lines[index + 1].trimmingCharacters(in: .whitespaces).lowercased()
+            
+            // Skip if already processed
+            if nextLine.hasPrefix(LLMConfig.responseTag.lowercased()) ||
+               nextLine.hasPrefix(LLMConfig.errorTag.lowercased()) {
+                continue
+            }
+            
+            // Extract prompt text after tag
+            let tagLength = LLMConfig.promptTag.count
+            guard trimmed.count > tagLength else { continue }
+            
+            let promptIndex = trimmed.index(trimmed.startIndex, offsetBy: tagLength)
+            let promptText = String(trimmed[promptIndex...]).trimmingCharacters(in: .whitespaces)
+            guard !promptText.isEmpty else { continue }
+            
+            processPrompt(promptText)
+            return // Process one at a time
+        }
     }
     
     private func processPrompt(_ rawPrompt: String) {
-        // Cancel any existing stream
         cancelStream()
         
-        // Resolve context references
+        // Resolve @-references to context
         let resolution = contextResolver.resolve(prompt: rawPrompt, fullText: fullText)
         
-        // Build the full message with context
+        // Build full message with context
         let fullMessage: String
         if let context = resolution.context {
             fullMessage = """
@@ -292,10 +327,8 @@ final class LogViewModel: ObservableObject {
         
         // Insert response tag
         appendToText("\(LLMConfig.responseTag) ")
-        
         isStreaming = true
         
-        // Start streaming task
         streamTask = Task { [weak self] in
             await self?.streamResponse(message: fullMessage)
         }
@@ -306,28 +339,15 @@ final class LogViewModel: ObservableObject {
             let stream = await openRouter.stream(userMessage: message)
             
             for try await chunk in stream {
-                // Check for cancellation
                 if Task.isCancelled { break }
-                
-                await MainActor.run {
-                    self.appendToText(chunk)
-                }
+                appendToText(chunk)
             }
             
-            // Stream completed successfully
-            await MainActor.run {
-                self.appendToText("\n---\n")
-                self.isStreaming = false
-            }
-            
+            appendToText("\n---\n")
+            isStreaming = false
         } catch {
-            // Handle error
-            await MainActor.run {
-                // Find and update the response line to show error
-                let errorMessage = error.localizedDescription
-                self.appendToText("\n\(LLMConfig.errorTag) \(errorMessage)\n---\n")
-                self.isStreaming = false
-            }
+            appendToText("\n\(LLMConfig.errorTag) \(error.localizedDescription)\n---\n")
+            isStreaming = false
         }
     }
     

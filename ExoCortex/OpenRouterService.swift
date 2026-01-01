@@ -1,7 +1,20 @@
+//
+//  OpenRouterService.swift
+//  ExoCortex
+//
+//  Service for streaming chat completions from OpenRouter API.
+//  Supports Claude and other models via SSE streaming.
+//
+
 import Foundation
 
-/// Service for streaming chat completions from OpenRouter API
+// MARK: - OpenRouter Service
+
+/// Actor-based service for streaming chat completions from OpenRouter API.
+/// Handles SSE (Server-Sent Events) stream parsing for real-time responses.
 actor OpenRouterService {
+    
+    // MARK: - Errors
     
     enum StreamError: Error, LocalizedError {
         case invalidAPIKey
@@ -23,10 +36,11 @@ actor OpenRouterService {
         }
     }
     
+    // MARK: - Streaming
+    
     /// Stream a chat completion response
-    /// - Parameters:
-    ///   - userMessage: The user's prompt (with context already included)
-    /// - Returns: An async stream of text chunks
+    /// - Parameter userMessage: The user's prompt (with context already included)
+    /// - Returns: Async stream of text chunks
     func stream(userMessage: String) -> AsyncThrowingStream<String, Error> {
         AsyncThrowingStream { continuation in
             Task {
@@ -75,8 +89,8 @@ actor OpenRouterService {
             throw StreamError.invalidResponse
         }
         
+        // Handle error responses
         guard httpResponse.statusCode == 200 else {
-            // Try to read error message
             var errorData = Data()
             for try await byte in bytes {
                 errorData.append(byte)
@@ -86,7 +100,16 @@ actor OpenRouterService {
         }
         
         // Parse SSE stream
+        try await parseSSEStream(bytes: bytes, continuation: continuation)
+    }
+    
+    /// Parse SSE (Server-Sent Events) stream and yield text chunks
+    private func parseSSEStream(
+        bytes: URLSession.AsyncBytes,
+        continuation: AsyncThrowingStream<String, Error>.Continuation
+    ) async throws {
         var buffer = ""
+        
         for try await byte in bytes {
             buffer.append(Character(UnicodeScalar(byte)))
             
@@ -95,29 +118,37 @@ actor OpenRouterService {
                 let line = String(buffer[..<newlineIndex])
                 buffer = String(buffer[buffer.index(after: newlineIndex)...])
                 
-                // Skip empty lines and comments
+                // Skip empty lines and non-data lines
                 guard !line.isEmpty, line.hasPrefix("data: ") else { continue }
                 
-                let jsonString = String(line.dropFirst(6)) // Remove "data: "
+                let jsonString = String(line.dropFirst(6))
                 
-                // Check for stream end
+                // Check for stream end marker
                 if jsonString == "[DONE]" {
                     continuation.finish()
                     return
                 }
                 
-                // Parse JSON chunk
-                if let data = jsonString.data(using: .utf8),
-                   let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-                   let choices = json["choices"] as? [[String: Any]],
-                   let firstChoice = choices.first,
-                   let delta = firstChoice["delta"] as? [String: Any],
-                   let content = delta["content"] as? String {
+                // Parse JSON and extract content
+                if let content = extractContent(from: jsonString) {
                     continuation.yield(content)
                 }
             }
         }
         
         continuation.finish()
+    }
+    
+    /// Extract text content from SSE JSON chunk
+    private func extractContent(from jsonString: String) -> String? {
+        guard let data = jsonString.data(using: .utf8),
+              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+              let choices = json["choices"] as? [[String: Any]],
+              let firstChoice = choices.first,
+              let delta = firstChoice["delta"] as? [String: Any],
+              let content = delta["content"] as? String else {
+            return nil
+        }
+        return content
     }
 }

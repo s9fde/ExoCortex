@@ -1,34 +1,45 @@
+//
+//  ContextResolver.swift
+//  ExoCortex
+//
+//  Resolves @-references in AI prompts to actual content from the log.
+//  Supports: @log, @today, @week, @last:N, @tag:xyz, @todos
+//
+
 import Foundation
 
-/// Resolves @-references in prompts to actual content from the log
+// MARK: - Context Resolver
+
+/// Resolves @-references in prompts to actual content from the log.
+/// Extracts relevant context based on date, tags, or line counts.
 struct ContextResolver {
+    
+    // MARK: - Types
     
     /// Result of resolving context references
     struct Resolution {
-        let cleanPrompt: String  // Prompt with @references removed
-        let context: String?     // Extracted context, if any
+        /// Prompt with @references removed
+        let cleanPrompt: String
+        /// Extracted context, if any
+        let context: String?
     }
     
     /// Supported context reference patterns
     private enum Reference {
-        case log           // @log - entire log
-        case today         // @today - today's entries
-        case week          // @week - last 7 days
-        case last(Int)     // @last:N - last N lines
-        case tag(String)   // @tag:xyz - lines with #xyz
-        case todos         // @todos - all open todos
+        case log            // @log - entire log
+        case today          // @today - today's entries
+        case week           // @week - last 7 days
+        case last(Int)      // @last:N - last N lines
+        case tag(String)    // @tag:xyz - lines with #xyz
+        case todos          // @todos - all open todos
         
         init?(from string: String) {
             let lower = string.lowercased()
             switch lower {
-            case "@log":
-                self = .log
-            case "@today":
-                self = .today
-            case "@week":
-                self = .week
-            case "@todos":
-                self = .todos
+            case "@log": self = .log
+            case "@today": self = .today
+            case "@week": self = .week
+            case "@todos": self = .todos
             default:
                 if lower.hasPrefix("@last:"), let count = Int(lower.dropFirst(6)) {
                     self = .last(count)
@@ -41,13 +52,15 @@ struct ContextResolver {
         }
     }
     
+    // MARK: - Public Methods
+    
     /// Resolve all @-references in a prompt
     /// - Parameters:
     ///   - prompt: The raw prompt text (after #p tag)
     ///   - fullText: The complete log content
     /// - Returns: Clean prompt and extracted context
     func resolve(prompt: String, fullText: String) -> Resolution {
-        // Find all @references in the prompt
+        // Match @-references
         let pattern = #"@(?:log|today|week|todos|last:\d+|tag:\w+)"#
         guard let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive) else {
             return Resolution(cleanPrompt: prompt, context: nil)
@@ -64,7 +77,7 @@ struct ContextResolver {
         var contextParts: [String] = []
         var cleanPrompt = prompt
         
-        // Process matches in reverse order to preserve indices
+        // Process in reverse to preserve indices
         for match in matches.reversed() {
             guard let swiftRange = Range(match.range, in: prompt) else { continue }
             let refString = String(prompt[swiftRange])
@@ -75,61 +88,50 @@ struct ContextResolver {
                     contextParts.insert(extracted, at: 0)
                 }
             }
-            
-            // Remove the reference from the prompt
             cleanPrompt.removeSubrange(swiftRange)
         }
         
-        // Clean up extra whitespace
+        // Clean up whitespace
         cleanPrompt = cleanPrompt
-            .components(separatedBy: .whitespaces)
-            .filter { !$0.isEmpty }
+            .split(separator: " ")
             .joined(separator: " ")
             .trimmingCharacters(in: .whitespaces)
         
-        // Build context string
         let context = contextParts.isEmpty ? nil : contextParts.joined(separator: "\n\n")
-        
         return Resolution(cleanPrompt: cleanPrompt, context: context)
     }
     
-    // MARK: - Private Extraction Methods
+    // MARK: - Extraction Methods
     
     private func extract(reference: Reference, from fullText: String) -> String {
         switch reference {
         case .log:
             return truncateIfNeeded(fullText, label: "Full log")
-            
         case .today:
             return extractToday(from: fullText)
-            
         case .week:
             return extractWeek(from: fullText)
-            
         case .last(let count):
             return extractLastLines(count, from: fullText)
-            
         case .tag(let tag):
             return extractByTag(tag, from: fullText)
-            
         case .todos:
             return extractOpenTodos(from: fullText)
         }
     }
     
     private func extractToday(from fullText: String) -> String {
-        let today = DateFormatter.logDate.string(from: Date())
+        let today = DateFormatter.isoDate.string(from: Date())
         let lines = fullText.components(separatedBy: "\n")
         var todayLines: [String] = []
         var inTodaySection = false
         
         for line in lines {
-            // Check if line contains today's date (common formats)
-            if line.contains(today) || line.contains(formattedDate(Date())) {
+            if line.contains(today) {
                 inTodaySection = true
                 todayLines.append(line)
             } else if inTodaySection {
-                // Stop at next date header (lines starting with # followed by date pattern)
+                // Stop at next date header
                 if line.hasPrefix("#") && containsDatePattern(line) && !line.contains(today) {
                     break
                 }
@@ -153,7 +155,6 @@ struct ContextResolver {
             if let date = extractDate(from: line) {
                 currentDate = date
             }
-            
             if let current = currentDate, current >= weekAgo {
                 weekLines.append(line)
             }
@@ -172,8 +173,8 @@ struct ContextResolver {
     
     private func extractByTag(_ tag: String, from fullText: String) -> String {
         let lines = fullText.components(separatedBy: "\n")
-        let tagPattern = "#\(tag)"
-        let matchingLines = lines.filter { $0.lowercased().contains(tagPattern.lowercased()) }
+        let pattern = "#\(tag)"
+        let matchingLines = lines.filter { $0.lowercased().contains(pattern.lowercased()) }
         
         let result = matchingLines.joined(separator: "\n")
         return result.isEmpty ? "[No lines with #\(tag)]" : truncateIfNeeded(result, label: "Lines with #\(tag)")
@@ -193,8 +194,8 @@ struct ContextResolver {
     // MARK: - Helpers
     
     private func truncateIfNeeded(_ text: String, label: String) -> String {
-        // Rough estimate: ~4 chars per token, leave room for prompt
-        let maxChars = LLMConfig.maxTokens * 3  // Conservative estimate
+        // Conservative estimate: ~4 chars per token
+        let maxChars = LLMConfig.maxTokens * 3
         
         if text.count > maxChars {
             let truncated = String(text.prefix(maxChars))
@@ -203,31 +204,20 @@ struct ContextResolver {
         return "\(label):\n\(text)"
     }
     
-    private func formattedDate(_ date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd"
-        return formatter.string(from: date)
-    }
-    
     private func containsDatePattern(_ line: String) -> Bool {
-        // Match common date patterns: 2024-12-31, Dec 31, December 31, etc.
         let patterns = [
-            #"\d{4}-\d{2}-\d{2}"#,  // 2024-12-31
-            #"\d{1,2}/\d{1,2}/\d{2,4}"#,  // 12/31/24 or 12/31/2024
-            #"(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]* \d{1,2}"#  // Dec 31 or December 31
+            #"\d{4}-\d{2}-\d{2}"#,                                    // 2024-12-31
+            #"\d{1,2}/\d{1,2}/\d{2,4}"#,                             // 12/31/24
+            #"(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)"#  // Month names
         ]
         
-        for pattern in patterns {
-            if let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive),
-               regex.firstMatch(in: line, range: NSRange(line.startIndex..., in: line)) != nil {
-                return true
-            }
+        return patterns.contains { pattern in
+            (try? NSRegularExpression(pattern: pattern, options: .caseInsensitive))?
+                .firstMatch(in: line, range: NSRange(line.startIndex..., in: line)) != nil
         }
-        return false
     }
     
     private func extractDate(from line: String) -> Date? {
-        // Try to parse date from line (for week extraction)
         let patterns: [(String, String)] = [
             (#"\d{4}-\d{2}-\d{2}"#, "yyyy-MM-dd"),
             (#"\d{2}/\d{2}/\d{4}"#, "MM/dd/yyyy")
@@ -252,7 +242,8 @@ struct ContextResolver {
 // MARK: - Date Formatter Extension
 
 private extension DateFormatter {
-    static let logDate: DateFormatter = {
+    /// ISO date format (yyyy-MM-dd)
+    static let isoDate: DateFormatter = {
         let formatter = DateFormatter()
         formatter.dateFormat = "yyyy-MM-dd"
         return formatter

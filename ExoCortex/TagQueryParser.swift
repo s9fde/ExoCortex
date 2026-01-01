@@ -1,34 +1,62 @@
+//
+//  TagQueryParser.swift
+//  ExoCortex
+//
+//  Parser for tag-based filter queries with boolean operators.
+//  Supports: #tag, todo:open, todo:done, &&, ||, !, and parentheses.
+//
+
 import Foundation
 
+// MARK: - Tag Query Parser
+
+/// Parses and evaluates filter queries for log lines.
+/// Supports tags (#tag), todo states, boolean operators (&&, ||, !), and grouping.
 struct TagQueryParser {
+    
+    // MARK: - AST Node
+    
+    /// Abstract syntax tree node representing a filter expression
     enum Node {
-        case tag(String)
-        case word(String)
-        case todoOpen
-        case todoDone
-        indirect case not(Node)
-        indirect case and(Node, Node)
-        indirect case or(Node, Node)
+        case tag(String)        // Match lines containing #tag
+        case word(String)       // Match lines containing word
+        case todoOpen           // Match open todo items [ ]
+        case todoDone           // Match completed todo items [x]
+        indirect case not(Node)          // Logical NOT
+        indirect case and(Node, Node)    // Logical AND
+        indirect case or(Node, Node)     // Logical OR
     }
 
+    // MARK: - Public Methods
+    
+    /// Parse a query string into an AST
+    /// - Parameter query: The filter query (e.g., "#work && todo:open")
+    /// - Returns: Root node of the AST, or nil if parsing fails
     func parse(_ query: String) -> Node? {
         let tokens = tokenize(query)
-        let output = shuntingYard(tokens)
-        return buildTree(from: output)
+        let postfix = shuntingYard(tokens)
+        return buildTree(from: postfix)
     }
 
+    /// Evaluate whether a line matches the given filter
+    /// - Parameters:
+    ///   - node: The filter AST (nil matches all lines)
+    ///   - line: The line to test
+    /// - Returns: True if the line matches the filter
     func matches(node: Node?, line: String) -> Bool {
         guard let node else { return true }
+        
         let lower = line.lowercased()
+        
         switch node {
         case .tag(let value):
-            return lower.contains("#" + value)
+            return lower.contains("#\(value)")
         case .word(let value):
             return lower.contains(value)
         case .todoOpen:
-            return isOpenTodo(line: lower)
+            return lower.contains("[ ]") || lower.contains("- [ ]")
         case .todoDone:
-            return isDoneTodo(line: lower)
+            return lower.contains("[x]") || lower.contains("- [x]")
         case .not(let inner):
             return !matches(node: inner, line: line)
         case .and(let lhs, let rhs):
@@ -38,6 +66,8 @@ struct TagQueryParser {
         }
     }
 
+    // MARK: - Tokenization
+    
     private enum Token {
         case operand(Node)
         case and
@@ -48,9 +78,9 @@ struct TagQueryParser {
     }
 
     private func tokenize(_ query: String) -> [Token] {
-        let raw = query.split(whereSeparator: { $0.isWhitespace })
-        return raw.compactMap { fragment -> Token? in
+        query.split(whereSeparator: \.isWhitespace).compactMap { fragment -> Token? in
             let value = String(fragment)
+            
             switch value.lowercased() {
             case "&&": return .and
             case "||": return .or
@@ -64,16 +94,17 @@ struct TagQueryParser {
                 if value == ")" { return .rparen }
                 if value.hasPrefix("#") {
                     return .operand(.tag(String(value.dropFirst()).lowercased()))
-                } else {
-                    return .operand(.word(value.lowercased()))
                 }
+                return .operand(.word(value.lowercased()))
             }
         }
     }
 
+    // MARK: - Shunting Yard Algorithm
+    
     private func shuntingYard(_ tokens: [Token]) -> [Token] {
         var output: [Token] = []
-        var ops: [Token] = []
+        var operators: [Token] = []
 
         func precedence(_ token: Token) -> Int {
             switch token {
@@ -86,10 +117,8 @@ struct TagQueryParser {
 
         func isOperator(_ token: Token) -> Bool {
             switch token {
-            case .and, .or, .not:
-                return true
-            default:
-                return false
+            case .and, .or, .not: return true
+            default: return false
             }
         }
 
@@ -98,30 +127,35 @@ struct TagQueryParser {
             case .operand:
                 output.append(token)
             case .and, .or, .not:
-                while let last = ops.last, isOperator(last), precedence(last) >= precedence(token) {
-                    output.append(ops.removeLast())
+                while let last = operators.last, isOperator(last), precedence(last) >= precedence(token) {
+                    output.append(operators.removeLast())
                 }
-                ops.append(token)
+                operators.append(token)
             case .lparen:
-                ops.append(token)
+                operators.append(token)
             case .rparen:
-                while let last = ops.last {
+                while let last = operators.last {
                     if case .lparen = last { break }
-                    output.append(ops.removeLast())
+                    output.append(operators.removeLast())
                 }
-                if let last = ops.last, case .lparen = last {
-                    ops.removeLast()
+                if let last = operators.last, case .lparen = last {
+                    operators.removeLast()
                 }
             }
         }
-        while let last = ops.popLast() {
+        
+        while let last = operators.popLast() {
             output.append(last)
         }
+        
         return output
     }
 
+    // MARK: - AST Construction
+    
     private func buildTree(from postfix: [Token]) -> Node? {
         var stack: [Node] = []
+        
         for token in postfix {
             switch token {
             case .operand(let node):
@@ -139,14 +173,7 @@ struct TagQueryParser {
                 break
             }
         }
+        
         return stack.last
-    }
-
-    private func isOpenTodo(line: String) -> Bool {
-        line.contains("[ ]") || line.contains("- [ ]")
-    }
-
-    private func isDoneTodo(line: String) -> Bool {
-        line.contains("[x]") || line.contains("[X]") || line.contains("- [x]") || line.contains("- [X]")
     }
 }

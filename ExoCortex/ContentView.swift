@@ -7,6 +7,9 @@
 
 import SwiftUI
 
+// MARK: - Main Content View
+
+/// Root view containing tab navigation between Log and Settings.
 struct ContentView: View {
     @EnvironmentObject var viewModel: LogViewModel
 
@@ -24,6 +27,8 @@ struct ContentView: View {
         }
     }
 }
+
+// MARK: - Preview
 
 #Preview {
     ContentView()
