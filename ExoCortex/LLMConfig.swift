@@ -6,7 +6,7 @@ enum LLMConfig {
     // MARK: - API Configuration
     
     /// Your OpenRouter API key - get one at https://openrouter.ai/keys
-    static let apiKey = "sk-or-v1-YOUR_API_KEY_HERE"
+    static let apiKey = "YOUR_API_KEY_HERE"
     
     /// The model to use - Claude Opus 4.5 via OpenRouter
     static let model = "anthropic/claude-sonnet-4-20250514"
