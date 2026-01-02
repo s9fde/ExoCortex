@@ -47,6 +47,9 @@ final class LogViewModel: ObservableObject {
         didSet { applyFilter() }
     }
     @Published var filteredLines: [LineItem] = []
+    @Published var filteredText = "" {
+        didSet { filteredTextDidChange() }
+    }
     @Published var savedFilters: [String] = []
     @Published var unlockError: String?
     @Published var filterError: String?
@@ -67,6 +70,7 @@ final class LogViewModel: ObservableObject {
     private var streamTask: Task<Void, Never>?
     private var previousText = ""
     private var isStreamingAppend = false
+    private var isUpdatingFilteredText = false
 
     // MARK: - Initialization
     
@@ -130,23 +134,27 @@ final class LogViewModel: ObservableObject {
             return
         }
         keychainStatus = nil
-        do {
-            try keychain.savePassword(pwd)
-            keychainStatus = "Password saved - use biometrics to unlock"
-        } catch let error as KeychainServiceError {
-            keychainStatus = error.localizedDescription
-        } catch {
-            keychainStatus = "Failed: \(error.localizedDescription)"
+        Task {
+            do {
+                try await keychain.savePassword(pwd)
+                keychainStatus = "Password saved - use biometrics to unlock"
+            } catch let error as KeychainServiceError {
+                keychainStatus = error.localizedDescription
+            } catch {
+                keychainStatus = "Failed: \(error.localizedDescription)"
+            }
         }
     }
 
     /// Remove stored password from keychain
     func clearKeychainPassword() {
-        do {
-            try keychain.deletePassword()
-            keychainStatus = "Saved password cleared"
-        } catch {
-            keychainStatus = "Failed to clear password"
+        Task {
+            do {
+                try await keychain.deletePassword()
+                keychainStatus = "Saved password cleared"
+            } catch {
+                keychainStatus = "Failed to clear password"
+            }
         }
     }
 
@@ -250,6 +258,7 @@ final class LogViewModel: ObservableObject {
         guard !trimmed.isEmpty else {
             filterError = nil
             filteredLines = enumerateLines(matching: nil)
+            updateFilteredText()
             return
         }
         
@@ -260,6 +269,7 @@ final class LogViewModel: ObservableObject {
             filterError = "Invalid filter"
             filteredLines = enumerateLines(matching: nil)
         }
+        updateFilteredText()
     }
 
     private func enumerateLines(matching node: TagQueryParser.Node?) -> [LineItem] {
@@ -270,6 +280,67 @@ final class LogViewModel: ObservableObject {
             let isTodo = lower.contains("[ ]") || isDone
             return LineItem(id: idx, text: line, isTodo: isTodo, isDone: isDone)
         }
+    }
+    
+    /// Handle changes to filteredText - sync back to fullText
+    private func filteredTextDidChange() {
+        // Skip if we're programmatically updating filteredText
+        guard !isUpdatingFilteredText else { return }
+        
+        // Skip if no filter is active (fullText is the source of truth)
+        guard !filterText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        
+        // Get current filtered line indices
+        let lineIndices = filteredLines.map { $0.id }
+        guard !lineIndices.isEmpty else { return }
+        
+        // Split the edited filtered text into lines
+        let editedLines = filteredText.components(separatedBy: "\n")
+        
+        // Get the full text lines
+        var fullLines = fullText.components(separatedBy: "\n")
+        
+        // Handle the case where user is editing within the filtered view
+        // Map edited lines back to their original positions
+        for (editIndex, originalIndex) in lineIndices.enumerated() {
+            guard originalIndex < fullLines.count else { continue }
+            
+            if editIndex < editedLines.count {
+                // Update existing line
+                fullLines[originalIndex] = editedLines[editIndex]
+            }
+        }
+        
+        // Handle added lines at the end of filtered text
+        if editedLines.count > lineIndices.count {
+            // User added new lines at the end of the filtered view
+            // Insert them after the last filtered line
+            if let lastIndex = lineIndices.last {
+                let newLines = editedLines.suffix(editedLines.count - lineIndices.count)
+                let insertIndex = lastIndex + 1
+                for (offset, newLine) in newLines.enumerated() {
+                    fullLines.insert(newLine, at: min(insertIndex + offset, fullLines.count))
+                }
+            }
+        }
+        
+        // Handle removed lines (user deleted content in filtered view)
+        // If fewer edited lines than filtered lines, append empty handling
+        // Actually, for simplicity, we'll just update existing lines
+        // and let new lines be added. Deletion across filtered views is complex.
+        
+        // Update fullText without triggering another filter cycle
+        let newFullText = fullLines.joined(separator: "\n")
+        if fullText != newFullText {
+            fullText = newFullText
+        }
+    }
+    
+    /// Update filteredText from filteredLines (called from applyFilter)
+    private func updateFilteredText() {
+        isUpdatingFilteredText = true
+        filteredText = filteredLines.map(\.text).joined(separator: "\n")
+        isUpdatingFilteredText = false
     }
 
     /// Force save immediately - called on focus lost, lock, or app termination

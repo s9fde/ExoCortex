@@ -228,11 +228,12 @@ struct LogEditorView: View {
     }
     
     /// Text binding - shows full text for "All", filtered for others
+    /// Both are now editable - changes in filtered view sync back to fullText
     private var editorText: Binding<String> {
         if viewsManager.selectedView.filter.isEmpty {
             return $viewModel.fullText
         } else {
-            return .constant(viewModel.filteredLines.map(\.text).joined(separator: "\n"))
+            return $viewModel.filteredText
         }
     }
     
