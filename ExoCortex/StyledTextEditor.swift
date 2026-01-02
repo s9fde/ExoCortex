@@ -18,6 +18,8 @@ struct StyledTextEditor: NSViewRepresentable {
     @Binding var text: String
     var searchTerm: String = ""
     var currentMatchIndex: Int = 0
+    /// Generation counter - when this increments, scroll to bottom and focus the editor
+    var scrollToBottomGeneration: Int = 0
     var onTodoToggle: ((Int) -> Void)?
     
     func makeNSView(context: Context) -> NSScrollView {
@@ -52,22 +54,50 @@ struct StyledTextEditor: NSViewRepresentable {
     func updateNSView(_ scrollView: NSScrollView, context: Context) {
         guard let textView = scrollView.documentView as? NSTextView else { return }
         
-        // Only update if text changed externally
-        if textView.string != text {
-            let selectedRanges = textView.selectedRanges
-            textView.string = text
-            textView.selectedRanges = selectedRanges
-        }
-        
-        // Update search term in coordinator
+        // Update search state in coordinator
+        let searchChanged = context.coordinator.searchTerm != searchTerm ||
+                           context.coordinator.currentMatchIndex != currentMatchIndex
         context.coordinator.searchTerm = searchTerm
         context.coordinator.currentMatchIndex = currentMatchIndex
         
-        // Apply syntax highlighting with search highlighting
-        context.coordinator.applySyntaxHighlighting()
+        // Check if generation incremented (means we should scroll to bottom & focus)
+        let shouldScrollToBottom = scrollToBottomGeneration > context.coordinator.lastScrollGeneration
+        
+        // Only update text if it changed externally (not from user typing)
+        if textView.string != text && !context.coordinator.isUserEditing {
+            // Store cursor position relative to content
+            let cursorLocation = textView.selectedRange().location
+            
+            textView.string = text
+            
+            // Restore cursor, clamped to valid range
+            let maxLocation = textView.string.utf16.count
+            let newLocation = min(cursorLocation, maxLocation)
+            textView.setSelectedRange(NSRange(location: newLocation, length: 0))
+            
+            // Apply highlighting after external text change
+            context.coordinator.applySyntaxHighlighting()
+        } else if searchChanged {
+            // Only re-highlight if search changed (not on every update)
+            context.coordinator.applySyntaxHighlighting()
+        }
+        
+        // Handle scroll to bottom and focus - must happen AFTER text is set
+        // This runs when generation increments (e.g., on unlock)
+        if shouldScrollToBottom {
+            // Delay slightly to ensure view is fully ready
+            DispatchQueue.main.async {
+                let endPosition = self.text.utf16.count
+                textView.setSelectedRange(NSRange(location: endPosition, length: 0))
+                textView.scrollToEndOfDocument(nil)
+                // Make the text view first responder so user can type immediately
+                textView.window?.makeFirstResponder(textView)
+            }
+            context.coordinator.lastScrollGeneration = scrollToBottomGeneration
+        }
         
         // Scroll to current match if searching
-        if !searchTerm.isEmpty {
+        if !searchTerm.isEmpty && searchChanged {
             context.coordinator.scrollToCurrentMatch()
         }
     }
@@ -82,8 +112,11 @@ struct StyledTextEditor: NSViewRepresentable {
         var currentMatchIndex: Int
         var onTodoToggle: ((Int) -> Void)?
         weak var textView: NSTextView?
-        private var isUpdating = false
+        var isUserEditing = false
+        /// Tracks which generation we last scrolled for
+        var lastScrollGeneration: Int = 0
         private var searchMatches: [NSRange] = []
+        private var highlightWorkItem: DispatchWorkItem?
         
         init(text: Binding<String>, searchTerm: String, currentMatchIndex: Int, onTodoToggle: ((Int) -> Void)?) {
             self.text = text
@@ -94,14 +127,21 @@ struct StyledTextEditor: NSViewRepresentable {
         
         func textDidChange(_ notification: Notification) {
             guard let textView = notification.object as? NSTextView else { return }
-            guard !isUpdating else { return }
             
-            isUpdating = true
+            // Mark as user editing to prevent updateNSView from overwriting
+            isUserEditing = true
             text.wrappedValue = textView.string
-            Task { @MainActor in
-                applySyntaxHighlighting()
+            
+            // Debounce syntax highlighting to avoid flickering during rapid typing
+            highlightWorkItem?.cancel()
+            let workItem = DispatchWorkItem { [weak self] in
+                Task { @MainActor in
+                    self?.applySyntaxHighlighting()
+                    self?.isUserEditing = false
+                }
             }
-            isUpdating = false
+            highlightWorkItem = workItem
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: workItem)
         }
         
         func textView(_ textView: NSTextView, clickedOnLink link: Any, at charIndex: Int) -> Bool {
@@ -416,6 +456,8 @@ struct StyledTextEditor: UIViewRepresentable {
     @Binding var text: String
     var searchTerm: String = ""
     var currentMatchIndex: Int = 0
+    /// Generation counter - when this increments, scroll to bottom and focus the editor
+    var scrollToBottomGeneration: Int = 0
     var onTodoToggle: ((Int) -> Void)?
     
     func makeUIView(context: Context) -> UITextView {
@@ -437,20 +479,50 @@ struct StyledTextEditor: UIViewRepresentable {
     }
     
     func updateUIView(_ textView: UITextView, context: Context) {
-        if textView.text != text {
-            let selectedRange = textView.selectedRange
-            textView.text = text
-            textView.selectedRange = selectedRange
-        }
-        
         // Update search state in coordinator
+        let searchChanged = context.coordinator.searchTerm != searchTerm ||
+                           context.coordinator.currentMatchIndex != currentMatchIndex
         context.coordinator.searchTerm = searchTerm
         context.coordinator.currentMatchIndex = currentMatchIndex
         
-        context.coordinator.applySyntaxHighlighting()
+        // Check if generation incremented (means we should scroll to bottom & focus)
+        let shouldScrollToBottom = scrollToBottomGeneration > context.coordinator.lastScrollGeneration
+        
+        // Only update text if it changed externally (not from user typing)
+        if textView.text != text && !context.coordinator.isUserEditing {
+            // Store cursor position
+            let cursorLocation = textView.selectedRange.location
+            
+            textView.text = text
+            
+            // Restore cursor, clamped to valid range
+            let maxLocation = (textView.text ?? "").utf16.count
+            let newLocation = min(cursorLocation, maxLocation)
+            textView.selectedRange = NSRange(location: newLocation, length: 0)
+            
+            // Apply highlighting after external text change
+            context.coordinator.applySyntaxHighlighting()
+        } else if searchChanged {
+            // Only re-highlight if search changed (not on every update)
+            context.coordinator.applySyntaxHighlighting()
+        }
+        
+        // Handle scroll to bottom and focus - must happen AFTER text is set
+        // This runs when generation increments (e.g., on unlock)
+        if shouldScrollToBottom {
+            let endPosition = text.utf16.count
+            textView.selectedRange = NSRange(location: endPosition, length: 0)
+            // Scroll to bottom after layout and make first responder
+            DispatchQueue.main.async {
+                let bottom = CGPoint(x: 0, y: max(0, textView.contentSize.height - textView.bounds.height))
+                textView.setContentOffset(bottom, animated: false)
+                textView.becomeFirstResponder()
+            }
+            context.coordinator.lastScrollGeneration = scrollToBottomGeneration
+        }
         
         // Scroll to current match if searching
-        if !searchTerm.isEmpty {
+        if !searchTerm.isEmpty && searchChanged {
             context.coordinator.scrollToCurrentMatch()
         }
     }
@@ -465,8 +537,11 @@ struct StyledTextEditor: UIViewRepresentable {
         var currentMatchIndex: Int
         var onTodoToggle: ((Int) -> Void)?
         weak var textView: UITextView?
-        private var isUpdating = false
+        var isUserEditing = false
+        /// Tracks which generation we last scrolled for
+        var lastScrollGeneration: Int = 0
         private var searchMatches: [NSRange] = []
+        private var highlightWorkItem: DispatchWorkItem?
         
         init(text: Binding<String>, searchTerm: String, currentMatchIndex: Int, onTodoToggle: ((Int) -> Void)?) {
             self.text = text
@@ -476,11 +551,18 @@ struct StyledTextEditor: UIViewRepresentable {
         }
         
         func textViewDidChange(_ textView: UITextView) {
-            guard !isUpdating else { return }
-            isUpdating = true
+            // Mark as user editing to prevent updateUIView from overwriting
+            isUserEditing = true
             text.wrappedValue = textView.text
-            applySyntaxHighlighting()
-            isUpdating = false
+            
+            // Debounce syntax highlighting to avoid flickering during rapid typing
+            highlightWorkItem?.cancel()
+            let workItem = DispatchWorkItem { [weak self] in
+                self?.applySyntaxHighlighting()
+                self?.isUserEditing = false
+            }
+            highlightWorkItem = workItem
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.15, execute: workItem)
         }
         
         func textView(_ textView: UITextView, shouldInteractWith URL: URL, in characterRange: NSRange) -> Bool {

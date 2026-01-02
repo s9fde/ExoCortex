@@ -238,6 +238,9 @@ struct LogEditorView: View {
     @State private var searchMatches: [Range<String.Index>] = []
     @State private var currentMatchIndex = 0
     
+    /// Tracks a unique ID that increments each time we unlock - forces scroll/focus
+    @State private var unlockGeneration: Int = 0
+    
     var body: some View {
         VStack(spacing: 0) {
             // Search bar (collapsible)
@@ -253,11 +256,12 @@ struct LogEditorView: View {
             
             Divider()
             
-            // Editor
+            // Editor - pass unlockGeneration to force fresh scroll/focus behavior
             StyledTextEditor(
                 text: editorText,
                 searchTerm: searchText,
                 currentMatchIndex: currentMatchIndex,
+                scrollToBottomGeneration: unlockGeneration,
                 onTodoToggle: { lineNumber in
                     viewModel.toggleTodo(for: lineNumber)
                 }
@@ -301,6 +305,10 @@ struct LogEditorView: View {
         }
         .onChange(of: viewModel.fullText) { _, _ in
             updateSearchMatches(for: searchText)
+        }
+        .onAppear {
+            // Increment generation on appear to trigger scroll-to-bottom
+            unlockGeneration += 1
         }
     }
     
