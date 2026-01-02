@@ -153,71 +153,27 @@ enum SidebarSelection: Hashable {
 
 // MARK: - Sidebar View
 
-/// Apple Mail-style sidebar with collapsible category groups.
+/// Simple Apple HIG-style sidebar with flat list of views.
 struct SidebarView: View {
     @ObservedObject var viewsManager: ViewsManager
     @EnvironmentObject var viewModel: LogViewModel
     @Binding var selection: SidebarSelection?
     
-    /// Tracks expansion state for each category
-    @State private var expandedCategories: Set<SidebarCategory> = Set(SidebarCategory.allCases)
-    
-    /// Groups views by category
-    private var groupedViews: [SidebarCategory: [NamedView]] {
-        Dictionary(grouping: viewsManager.views) { $0.category }
-    }
-    
-    /// Categories that have at least one view, in display order
-    private var activeCategories: [SidebarCategory] {
-        SidebarCategory.allCases.filter { groupedViews[$0]?.isEmpty == false }
-    }
-    
     var body: some View {
-        VStack(spacing: 0) {
-            // Hierarchical views list
-            List(selection: $selection) {
-                ForEach(activeCategories) { category in
-                    Section(isExpanded: Binding(
-                        get: { expandedCategories.contains(category) },
-                        set: { isExpanded in
-                            if isExpanded {
-                                expandedCategories.insert(category)
-                            } else {
-                                expandedCategories.remove(category)
-                            }
-                        }
-                    )) {
-                        ForEach(groupedViews[category] ?? []) { view in
-                            NavigationLink(value: SidebarSelection.view(view)) {
-                                Label(view.name, systemImage: view.icon)
-                            }
-                        }
-                    } header: {
-                        Label(category.rawValue, systemImage: category.icon)
-                    }
+        List(selection: $selection) {
+            // All views in a simple flat list
+            ForEach(viewsManager.views) { view in
+                NavigationLink(value: SidebarSelection.view(view)) {
+                    Label(view.name, systemImage: view.icon)
                 }
             }
-            .listStyle(.sidebar)
             
-            Divider()
-            
-            // Settings button at bottom (separate from views)
-            Button {
-                selection = .settings
-            } label: {
-                HStack {
-                    Label("Settings", systemImage: "gear")
-                    Spacer()
-                }
-                .padding(.horizontal, 12)
-                .padding(.vertical, 8)
+            // Settings at the bottom as a regular list item
+            NavigationLink(value: SidebarSelection.settings) {
+                Label("Settings", systemImage: "gear")
             }
-            .buttonStyle(.plain)
-            .background(selection == .settings ? Color.accentColor.opacity(0.15) : Color.clear)
-            .cornerRadius(6)
-            .padding(.horizontal, 8)
-            .padding(.vertical, 8)
         }
+        .listStyle(.sidebar)
         .navigationTitle("ExoCortex")
         #if os(macOS)
         .navigationSplitViewColumnWidth(min: 180, ideal: 220, max: 300)
@@ -228,27 +184,13 @@ struct SidebarView: View {
 // MARK: - Log Editor View
 
 /// Main editor view showing filtered content based on selected view.
+/// Simple plain text editor - no syntax highlighting or complex scroll logic.
 struct LogEditorView: View {
     @ObservedObject var viewModel: LogViewModel
     @ObservedObject var viewsManager: ViewsManager
     
-    /// Search state
-    @State private var searchText = ""
-    @State private var isSearchVisible = false
-    @State private var searchMatches: [Range<String.Index>] = []
-    @State private var currentMatchIndex = 0
-    
-    /// Tracks a unique ID that increments each time we unlock - forces scroll/focus
-    @State private var unlockGeneration: Int = 0
-    
     var body: some View {
         VStack(spacing: 0) {
-            // Search bar (collapsible)
-            if isSearchVisible {
-                searchBar
-                Divider()
-            }
-            
             // Status bar
             statusBar
                 .padding(.horizontal)
@@ -256,14 +198,11 @@ struct LogEditorView: View {
             
             Divider()
             
-            // Editor - pass unlockGeneration to force fresh scroll/focus behavior
-            StyledTextEditor(
+            // Simple text editor with save on focus lost
+            SimpleTextEditor(
                 text: editorText,
-                searchTerm: searchText,
-                currentMatchIndex: currentMatchIndex,
-                scrollToBottomGeneration: unlockGeneration,
-                onTodoToggle: { lineNumber in
-                    viewModel.toggleTodo(for: lineNumber)
+                onFocusLost: {
+                    Task { await viewModel.forceSave() }
                 }
             )
             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -271,7 +210,6 @@ struct LogEditorView: View {
         .navigationTitle(viewsManager.selectedView.name)
         #if os(macOS)
         .navigationSubtitle(viewsManager.selectedView.filter.isEmpty ? "" : viewsManager.selectedView.filter)
-        .searchable(text: $searchText, isPresented: $isSearchVisible, prompt: "Search in log...")
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
                 Button {
@@ -282,33 +220,10 @@ struct LogEditorView: View {
                 .help("Insert date separator (--- YYYY-MM-DD ---)")
                 .keyboardShortcut("d", modifiers: [.command, .shift])
             }
-            
-            ToolbarItem(placement: .primaryAction) {
-                Button {
-                    isSearchVisible.toggle()
-                    if !isSearchVisible {
-                        searchText = ""
-                        searchMatches = []
-                    }
-                } label: {
-                    Image(systemName: "magnifyingglass")
-                }
-                .keyboardShortcut("f", modifiers: .command)
-            }
         }
         #endif
         .onChange(of: viewsManager.selectedView) { _, newView in
             viewModel.filterText = newView.filter
-        }
-        .onChange(of: searchText) { _, newValue in
-            updateSearchMatches(for: newValue)
-        }
-        .onChange(of: viewModel.fullText) { _, _ in
-            updateSearchMatches(for: searchText)
-        }
-        .onAppear {
-            // Increment generation on appear to trigger scroll-to-bottom
-            unlockGeneration += 1
         }
     }
     
@@ -319,75 +234,6 @@ struct LogEditorView: View {
         } else {
             return .constant(viewModel.filteredLines.map(\.text).joined(separator: "\n"))
         }
-    }
-    
-    // MARK: - Search Bar
-    
-    private var searchBar: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "magnifyingglass")
-                .foregroundStyle(.secondary)
-            
-            TextField("Search...", text: $searchText)
-                .textFieldStyle(.plain)
-                .onSubmit {
-                    goToNextMatch()
-                }
-            
-            if !searchText.isEmpty {
-                // Match counter
-                Text(searchMatches.isEmpty ? "No matches" : "\(currentMatchIndex + 1) of \(searchMatches.count)")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .fixedSize()
-                
-                // Navigation buttons
-                Button {
-                    goToPreviousMatch()
-                } label: {
-                    Image(systemName: "chevron.up")
-                }
-                .buttonStyle(.borderless)
-                .disabled(searchMatches.isEmpty)
-                .keyboardShortcut("g", modifiers: [.command, .shift])
-                
-                Button {
-                    goToNextMatch()
-                } label: {
-                    Image(systemName: "chevron.down")
-                }
-                .buttonStyle(.borderless)
-                .disabled(searchMatches.isEmpty)
-                .keyboardShortcut("g", modifiers: .command)
-                
-                // Clear button
-                Button {
-                    searchText = ""
-                } label: {
-                    Image(systemName: "xmark.circle.fill")
-                        .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.borderless)
-            }
-            
-            // Close search bar
-            Button {
-                isSearchVisible = false
-                searchText = ""
-                searchMatches = []
-            } label: {
-                Image(systemName: "xmark")
-            }
-            .buttonStyle(.borderless)
-            .keyboardShortcut(.escape, modifiers: [])
-        }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
-        #if os(macOS)
-        .background(Color(nsColor: .textBackgroundColor))
-        #else
-        .background(Color(uiColor: .secondarySystemBackground))
-        #endif
     }
     
     // MARK: - Status Bar
@@ -433,44 +279,6 @@ struct LogEditorView: View {
                 .foregroundStyle(.red)
                 .accessibilityLabel("Error: \(message)")
         }
-    }
-    
-    // MARK: - Search Logic
-    
-    private func updateSearchMatches(for query: String) {
-        guard !query.isEmpty else {
-            searchMatches = []
-            currentMatchIndex = 0
-            return
-        }
-        
-        let text = viewModel.fullText
-        var matches: [Range<String.Index>] = []
-        var searchRange = text.startIndex..<text.endIndex
-        
-        while let range = text.range(of: query, options: .caseInsensitive, range: searchRange) {
-            matches.append(range)
-            searchRange = range.upperBound..<text.endIndex
-        }
-        
-        searchMatches = matches
-        
-        // Reset index if needed
-        if currentMatchIndex >= matches.count {
-            currentMatchIndex = max(0, matches.count - 1)
-        }
-    }
-    
-    private func goToNextMatch() {
-        guard !searchMatches.isEmpty else { return }
-        currentMatchIndex = (currentMatchIndex + 1) % searchMatches.count
-        // TODO: Scroll to match in StyledTextEditor
-    }
-    
-    private func goToPreviousMatch() {
-        guard !searchMatches.isEmpty else { return }
-        currentMatchIndex = (currentMatchIndex - 1 + searchMatches.count) % searchMatches.count
-        // TODO: Scroll to match in StyledTextEditor
     }
 }
 
