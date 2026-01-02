@@ -108,15 +108,22 @@ actor OpenRouterService {
         bytes: URLSession.AsyncBytes,
         continuation: AsyncThrowingStream<String, Error>.Continuation
     ) async throws {
-        var buffer = ""
+        var byteBuffer = Data()
         
         for try await byte in bytes {
-            buffer.append(Character(UnicodeScalar(byte)))
+            byteBuffer.append(byte)
             
-            // Process complete lines
-            while let newlineIndex = buffer.firstIndex(of: "\n") {
-                let line = String(buffer[..<newlineIndex])
-                buffer = String(buffer[buffer.index(after: newlineIndex)...])
+            // Try to decode accumulated bytes as UTF-8 string
+            guard let buffer = String(data: byteBuffer, encoding: .utf8) else {
+                // Incomplete UTF-8 sequence, wait for more bytes
+                continue
+            }
+            
+            // Process complete lines (ending with newline)
+            var remaining = buffer
+            while let newlineIndex = remaining.firstIndex(of: "\n") {
+                let line = String(remaining[..<newlineIndex])
+                remaining = String(remaining[remaining.index(after: newlineIndex)...])
                 
                 // Skip empty lines and non-data lines
                 guard !line.isEmpty, line.hasPrefix("data: ") else { continue }
@@ -134,6 +141,9 @@ actor OpenRouterService {
                     continuation.yield(content)
                 }
             }
+            
+            // Keep only unprocessed bytes in buffer
+            byteBuffer = remaining.data(using: .utf8) ?? Data()
         }
         
         continuation.finish()

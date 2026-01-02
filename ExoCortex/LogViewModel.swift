@@ -64,7 +64,6 @@ final class LogViewModel: ObservableObject {
     // MARK: - Private State
     
     private var activePassword: String?
-    private var saveWorkItem: DispatchWorkItem?
     private var streamTask: Task<Void, Never>?
     private var previousText = ""
     private var isStreamingAppend = false
@@ -108,17 +107,20 @@ final class LogViewModel: ObservableObject {
         }
     }
 
-    /// Lock the log and clear sensitive data
+    /// Lock the log and clear sensitive data (saves before locking)
     func lock() {
         cancelStream()
-        saveWorkItem?.cancel()
-        activePassword = nil
-        password = ""
-        fullText = ""
-        previousText = ""
-        filteredLines = []
-        isLocked = true
-        saveStatus = .idle
+        // Force save before locking
+        Task {
+            await forceSave()
+            activePassword = nil
+            password = ""
+            fullText = ""
+            previousText = ""
+            filteredLines = []
+            isLocked = true
+            saveStatus = .idle
+        }
     }
 
     /// Store password in keychain with biometric protection for later retrieval
@@ -237,7 +239,7 @@ final class LogViewModel: ObservableObject {
         }
         
         applyFilter()
-        scheduleAutosave()
+        // Note: No more auto-save debounce - saves only on focus lost, lock, or app close
         detectAndProcessPrompt(oldText: oldValue, newText: fullText)
         previousText = fullText
     }
@@ -270,19 +272,10 @@ final class LogViewModel: ObservableObject {
         }
     }
 
-    private func scheduleAutosave() {
-        guard !isLocked else { return }
-        saveWorkItem?.cancel()
-        
-        let workItem = DispatchWorkItem { [weak self] in
-            Task { await self?.performAutosave() }
-        }
-        saveWorkItem = workItem
-        DispatchQueue.main.asyncAfter(deadline: .now() + 1.0, execute: workItem)
-    }
-
-    private func performAutosave() async {
+    /// Force save immediately - called on focus lost, lock, or app termination
+    func forceSave() async {
         guard let password = activePassword else { return }
+        guard !isLocked else { return }
         saveStatus = .saving
         do {
             try await repository.save(text: fullText, password: password)

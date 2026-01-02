@@ -34,11 +34,14 @@ struct ExoCortexApp: App {
                 #endif
                 #if os(macOS)
                 .onReceive(NotificationCenter.default.publisher(for: NSWindow.willCloseNotification)) { notification in
-                    // macOS: Only lock when window closes (not on focus lost)
-                    // Users can switch between apps without losing their work
+                    // macOS: Save and lock when window closes
                     if notification.object is NSWindow {
                         viewModel.lock()
                     }
+                }
+                .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
+                    // macOS: Save before app terminates
+                    Task { await viewModel.forceSave() }
                 }
                 #endif
         }
