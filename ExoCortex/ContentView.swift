@@ -12,8 +12,8 @@ import SwiftUI
 /// Root view with Apple Notes-style sidebar navigation.
 /// Shows lock screen when locked, split view when unlocked.
 struct ContentView: View {
-    @EnvironmentObject var viewModel: LogViewModel
-    @StateObject private var viewsManager = ViewsManager()
+    @Environment(LogViewModel.self) private var viewModel
+    @State private var viewsManager = ViewsManager()
     
     /// Column visibility for NavigationSplitView
     @State private var columnVisibility: NavigationSplitViewVisibility = .all
@@ -37,7 +37,7 @@ struct ContentView: View {
         NavigationSplitView(columnVisibility: $columnVisibility) {
             // Sidebar
             SidebarView(viewsManager: viewsManager, selection: $sidebarSelection)
-                .environmentObject(viewModel)
+                .environment(viewModel)
         } detail: {
             // Detail pane based on selection
             detailContent
@@ -155,12 +155,32 @@ enum SidebarSelection: Hashable {
 
 /// Simple Apple HIG-style sidebar with flat list of views.
 struct SidebarView: View {
-    @ObservedObject var viewsManager: ViewsManager
-    @EnvironmentObject var viewModel: LogViewModel
+    var viewsManager: ViewsManager
+    @Environment(LogViewModel.self) private var viewModel
     @Binding var selection: SidebarSelection?
+    
+    @State private var searchText = ""
     
     var body: some View {
         List(selection: $selection) {
+            // Search/Filter field at the top
+            Section {
+                HStack {
+                    Image(systemName: "magnifyingglass")
+                        .foregroundStyle(.secondary)
+                    TextField("Filter log...", text: $searchText)
+                        .textFieldStyle(.plain)
+                        .onSubmit {
+                            if !searchText.isEmpty {
+                                let newView = NamedView(name: "Search: \(searchText)", filter: searchText, icon: "magnifyingglass")
+                                viewsManager.addView(newView)
+                                selection = .view(newView)
+                                searchText = ""
+                            }
+                        }
+                }
+            }
+            
             // All views in a simple flat list
             ForEach(viewsManager.views) { view in
                 NavigationLink(value: SidebarSelection.view(view)) {
@@ -186,8 +206,8 @@ struct SidebarView: View {
 /// Main editor view showing filtered content based on selected view.
 /// Simple plain text editor - no syntax highlighting or complex scroll logic.
 struct LogEditorView: View {
-    @ObservedObject var viewModel: LogViewModel
-    @ObservedObject var viewsManager: ViewsManager
+    var viewModel: LogViewModel
+    var viewsManager: ViewsManager
     
     var body: some View {
         VStack(spacing: 0) {
@@ -211,7 +231,18 @@ struct LogEditorView: View {
         #if os(macOS)
         .navigationSubtitle(viewsManager.selectedView.filter.isEmpty ? "" : viewsManager.selectedView.filter)
         .toolbar {
-            ToolbarItem(placement: .primaryAction) {
+            ToolbarItemGroup(placement: .primaryAction) {
+                // Undo AI Edit button
+                Button {
+                    viewModel.undoLLM()
+                } label: {
+                    Image(systemName: "arrow.uturn.backward")
+                }
+                .help("Undo last AI edit (⌘Z)")
+                .keyboardShortcut("z", modifiers: .command)
+                .disabled(!viewModel.canUndoLLM)
+                
+                // Date separator button
                 Button {
                     viewModel.insertDateLine()
                 } label: {
@@ -287,5 +318,5 @@ struct LogEditorView: View {
 
 #Preview {
     ContentView()
-        .environmentObject(LogViewModel())
+        .environment(LogViewModel())
 }

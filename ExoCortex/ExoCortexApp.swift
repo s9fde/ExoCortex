@@ -14,7 +14,7 @@ import SwiftUI
 @main
 struct ExoCortexApp: App {
     /// Shared view model managing log state, encryption, and AI interactions
-    @StateObject private var viewModel = LogViewModel()
+    @State private var viewModel = LogViewModel()
     
     /// App lifecycle phase for auto-locking
     @Environment(\.scenePhase) private var scenePhase
@@ -22,7 +22,7 @@ struct ExoCortexApp: App {
     var body: some Scene {
         WindowGroup {
             ContentView()
-                .environmentObject(viewModel)
+                .environment(viewModel)
                 #if os(iOS)
                 .onChange(of: scenePhase) { _, newPhase in
                     // iOS: Only lock when app goes to background (not just inactive)
@@ -49,8 +49,28 @@ struct ExoCortexApp: App {
         .windowStyle(.titleBar)
         .windowToolbarStyle(.unified)
         .commands {
-            CommandGroup(replacing: .appInfo) { }
-            CommandGroup(replacing: .newItem) { }
+            SidebarCommands()
+            
+            CommandGroup(after: .newItem) {
+                Button("New Date Entry") {
+                    viewModel.insertDateLine()
+                }
+                .keyboardShortcut("n", modifiers: .command)
+            }
+            
+            CommandGroup(after: .appInfo) {
+                Button("Lock Log") {
+                    viewModel.lock()
+                }
+                .keyboardShortcut("l", modifiers: .command)
+            }
+            
+            CommandGroup(replacing: .saveItem) {
+                Button("Save") {
+                    Task { await viewModel.forceSave() }
+                }
+                .keyboardShortcut("s", modifiers: .command)
+            }
         }
         #endif
     }
