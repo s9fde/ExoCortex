@@ -38,14 +38,29 @@ actor OpenRouterService {
     
     // MARK: - Streaming
     
-    /// Stream a chat completion response
+    /// Stream a chat completion response (read-only mode)
     /// - Parameter userMessage: The user's prompt (with context already included)
     /// - Returns: Async stream of text chunks
     func stream(userMessage: String) -> AsyncThrowingStream<String, Error> {
         AsyncThrowingStream { continuation in
             Task {
                 do {
-                    try await performStream(userMessage: userMessage, continuation: continuation)
+                    try await performStream(userMessage: userMessage, systemPrompt: LLMConfig.systemPrompt, continuation: continuation)
+                } catch {
+                    continuation.finish(throwing: error)
+                }
+            }
+        }
+    }
+    
+    /// Stream a chat completion response for edit mode (#do)
+    /// - Parameter userMessage: The edit instruction with context
+    /// - Returns: Async stream of text chunks
+    func streamEdit(userMessage: String) -> AsyncThrowingStream<String, Error> {
+        AsyncThrowingStream { continuation in
+            Task {
+                do {
+                    try await performStream(userMessage: userMessage, systemPrompt: LLMConfig.editSystemPrompt, continuation: continuation)
                 } catch {
                     continuation.finish(throwing: error)
                 }
@@ -55,6 +70,7 @@ actor OpenRouterService {
     
     private func performStream(
         userMessage: String,
+        systemPrompt: String,
         continuation: AsyncThrowingStream<String, Error>.Continuation
     ) async throws {
         // Validate API key
@@ -75,7 +91,7 @@ actor OpenRouterService {
             "stream": true,
             "max_tokens": LLMConfig.maxTokens,
             "messages": [
-                ["role": "system", "content": LLMConfig.systemPrompt],
+                ["role": "system", "content": systemPrompt],
                 ["role": "user", "content": userMessage]
             ]
         ]

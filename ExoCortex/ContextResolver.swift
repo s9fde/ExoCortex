@@ -22,6 +22,12 @@ struct ContextResolver {
         let cleanPrompt: String
         /// Extracted context, if any
         let context: String?
+        /// Range in original fullText where context was extracted from (for edit mode)
+        let contextRange: Range<String.Index>?
+        /// Number of @scope references found in the original prompt
+        let scopeCount: Int
+        /// Whether the scope supports editing (contiguous range)
+        let isEditableScope: Bool
     }
     
     /// Supported context reference patterns
@@ -52,6 +58,12 @@ struct ContextResolver {
         }
     }
     
+    /// Result of extraction with range information
+    private struct ExtractionResult {
+        let text: String
+        let range: Range<String.Index>?
+    }
+    
     // MARK: - Public Methods
     
     /// Resolve all @-references in a prompt
@@ -63,19 +75,21 @@ struct ContextResolver {
         // Match @-references
         let pattern = #"@(?:log|today|week|todos|last:\d+|tag:\w+)"#
         guard let regex = try? NSRegularExpression(pattern: pattern, options: .caseInsensitive) else {
-            return Resolution(cleanPrompt: prompt, context: nil)
+            return Resolution(cleanPrompt: prompt, context: nil, contextRange: nil, scopeCount: 0, isEditableScope: false)
         }
         
         let range = NSRange(prompt.startIndex..., in: prompt)
         let matches = regex.matches(in: prompt, range: range)
         
         guard !matches.isEmpty else {
-            return Resolution(cleanPrompt: prompt, context: nil)
+            return Resolution(cleanPrompt: prompt, context: nil, contextRange: nil, scopeCount: 0, isEditableScope: false)
         }
         
         // Extract references and build context
         var contextParts: [String] = []
+        var contextRanges: [Range<String.Index>] = []
         var cleanPrompt = prompt
+        let scopeCount = matches.count
         
         // Process in reverse to preserve indices
         for match in matches.reversed() {
@@ -83,9 +97,12 @@ struct ContextResolver {
             let refString = String(prompt[swiftRange])
             
             if let reference = Reference(from: refString) {
-                let extracted = extract(reference: reference, from: fullText)
-                if !extracted.isEmpty {
-                    contextParts.insert(extracted, at: 0)
+                let extraction = extractWithRange(reference: reference, from: fullText)
+                if !extraction.text.isEmpty {
+                    contextParts.insert(extraction.text, at: 0)
+                    if let extractedRange = extraction.range {
+                        contextRanges.insert(extractedRange, at: 0)
+                    }
                 }
             }
             cleanPrompt.removeSubrange(swiftRange)
@@ -98,89 +115,138 @@ struct ContextResolver {
             .trimmingCharacters(in: .whitespaces)
         
         let context = contextParts.isEmpty ? nil : contextParts.joined(separator: "\n\n")
-        return Resolution(cleanPrompt: cleanPrompt, context: context)
+        
+        // For edit mode: use first contiguous range only if single scope
+        // Multiple scopes or non-contiguous (tag/todos) return nil range
+        let primaryRange = contextRanges.count == 1 ? contextRanges.first : nil
+        let isEditable = scopeCount == 1 && primaryRange != nil
+        
+        return Resolution(cleanPrompt: cleanPrompt, context: context, contextRange: primaryRange, scopeCount: scopeCount, isEditableScope: isEditable)
     }
     
     // MARK: - Extraction Methods
     
-    private func extract(reference: Reference, from fullText: String) -> String {
+    private func extractWithRange(reference: Reference, from fullText: String) -> ExtractionResult {
         switch reference {
         case .log:
-            return truncateIfNeeded(fullText, label: "Full log")
+            let text = truncateIfNeeded(fullText, label: "Full log")
+            return ExtractionResult(text: text, range: fullText.startIndex..<fullText.endIndex)
         case .today:
-            return extractToday(from: fullText)
+            return extractTodayWithRange(from: fullText)
         case .week:
-            return extractWeek(from: fullText)
+            return extractWeekWithRange(from: fullText)
         case .last(let count):
-            return extractLastLines(count, from: fullText)
+            return extractLastLinesWithRange(count, from: fullText)
         case .tag(let tag):
-            return extractByTag(tag, from: fullText)
+            return extractByTagWithRange(tag, from: fullText)
         case .todos:
-            return extractOpenTodos(from: fullText)
+            return extractOpenTodosWithRange(from: fullText)
         }
     }
     
-    private func extractToday(from fullText: String) -> String {
+    private func extractTodayWithRange(from fullText: String) -> ExtractionResult {
         let today = DateFormatter.isoDate.string(from: Date())
         let lines = fullText.components(separatedBy: "\n")
+        var startLineIndex: Int?
+        var endLineIndex: Int?
         var todayLines: [String] = []
         var inTodaySection = false
         
-        for line in lines {
-            if line.contains(today) {
+        for (index, line) in lines.enumerated() {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            
+            // Check if this line is a date header (starts with --- or #)
+            let isDateHeader = (trimmed.hasPrefix("---") || trimmed.hasPrefix("#")) && containsDatePattern(line)
+            
+            if line.contains(today) && isDateHeader {
+                // Found a today date header - start/continue section
                 inTodaySection = true
+                if startLineIndex == nil { startLineIndex = index }
                 todayLines.append(line)
+                endLineIndex = index
             } else if inTodaySection {
-                // Stop at next date header
-                if line.hasPrefix("#") && containsDatePattern(line) && !line.contains(today) {
+                // Stop at any date header that isn't today, or any --- separator
+                if isDateHeader || (trimmed.hasPrefix("---") && trimmed.count >= 3) {
+                    // Hit a new section - stop here
                     break
                 }
                 todayLines.append(line)
+                endLineIndex = index
             }
         }
         
         let result = todayLines.joined(separator: "\n")
-        return result.isEmpty ? "[No entries for today]" : truncateIfNeeded(result, label: "Today's entries")
+        
+        // Calculate range in original string
+        var range: Range<String.Index>?
+        if let start = startLineIndex, let end = endLineIndex {
+            range = calculateRange(for: lines, startLine: start, endLine: end, in: fullText)
+        }
+        
+        let text = result.isEmpty ? "[No entries for today]" : result
+        return ExtractionResult(text: text, range: range)
     }
     
-    private func extractWeek(from fullText: String) -> String {
+    private func extractWeekWithRange(from fullText: String) -> ExtractionResult {
         let calendar = Calendar.current
         let weekAgo = calendar.date(byAdding: .day, value: -7, to: Date()) ?? Date()
         
         let lines = fullText.components(separatedBy: "\n")
         var weekLines: [String] = []
         var currentDate: Date?
+        var startLineIndex: Int?
+        var endLineIndex: Int?
         
-        for line in lines {
+        for (index, line) in lines.enumerated() {
             if let date = extractDate(from: line) {
                 currentDate = date
             }
             if let current = currentDate, current >= weekAgo {
+                if startLineIndex == nil { startLineIndex = index }
                 weekLines.append(line)
+                endLineIndex = index
             }
         }
         
         let result = weekLines.joined(separator: "\n")
-        return result.isEmpty ? "[No entries in the last week]" : truncateIfNeeded(result, label: "Last 7 days")
+        
+        var range: Range<String.Index>?
+        if let start = startLineIndex, let end = endLineIndex {
+            range = calculateRange(for: lines, startLine: start, endLine: end, in: fullText)
+        }
+        
+        let text = result.isEmpty ? "[No entries in the last week]" : result
+        return ExtractionResult(text: text, range: range)
     }
     
-    private func extractLastLines(_ count: Int, from fullText: String) -> String {
+    private func extractLastLinesWithRange(_ count: Int, from fullText: String) -> ExtractionResult {
         let lines = fullText.components(separatedBy: "\n")
-        let lastLines = lines.suffix(count)
+        let startIndex = max(0, lines.count - count)
+        let lastLines = Array(lines.suffix(count))
         let result = lastLines.joined(separator: "\n")
-        return truncateIfNeeded(result, label: "Last \(count) lines")
+        
+        let range = calculateRange(for: lines, startLine: startIndex, endLine: lines.count - 1, in: fullText)
+        
+        return ExtractionResult(text: result, range: range)
     }
     
-    private func extractByTag(_ tag: String, from fullText: String) -> String {
+    private func extractByTagWithRange(_ tag: String, from fullText: String) -> ExtractionResult {
+        // Note: Tag extraction returns non-contiguous lines, so range tracking is complex
+        // For edit mode, we return nil range (not supported for non-contiguous selections)
         let lines = fullText.components(separatedBy: "\n")
         let pattern = "#\(tag)"
         let matchingLines = lines.filter { $0.lowercased().contains(pattern.lowercased()) }
         
         let result = matchingLines.joined(separator: "\n")
-        return result.isEmpty ? "[No lines with #\(tag)]" : truncateIfNeeded(result, label: "Lines with #\(tag)")
+        let text = result.isEmpty ? "[No lines with #\(tag)]" : result
+        
+        // Non-contiguous - return nil range (edit mode won't work with this scope)
+        return ExtractionResult(text: text, range: nil)
     }
     
-    private func extractOpenTodos(from fullText: String) -> String {
+    private func extractOpenTodosWithRange(from fullText: String) -> ExtractionResult {
+        // Note: Todos are scattered throughout, so range tracking returns nil
+        // For edit mode, we return nil range (not supported for non-contiguous selections)
         let lines = fullText.components(separatedBy: "\n")
         let todoLines = lines.filter { line in
             let lower = line.lowercased()
@@ -188,7 +254,46 @@ struct ContextResolver {
         }
         
         let result = todoLines.joined(separator: "\n")
-        return result.isEmpty ? "[No open todos found]" : "Open todos:\n\(result)"
+        let text = result.isEmpty ? "[No open todos found]" : result
+        
+        // Non-contiguous - return nil range
+        return ExtractionResult(text: text, range: nil)
+    }
+    
+    /// Calculate the range in fullText that corresponds to the given line indices
+    private func calculateRange(for lines: [String], startLine: Int, endLine: Int, in fullText: String) -> Range<String.Index>? {
+        guard startLine >= 0 && endLine < lines.count && startLine <= endLine else { return nil }
+        
+        var currentIndex = fullText.startIndex
+        var startIndex: String.Index?
+        var endIndex: String.Index?
+        
+        for (lineIndex, line) in lines.enumerated() {
+            if lineIndex == startLine {
+                startIndex = currentIndex
+            }
+            
+            // Move to end of current line
+            let lineEndDistance = line.count
+            guard let nextIndex = fullText.index(currentIndex, offsetBy: lineEndDistance, limitedBy: fullText.endIndex) else {
+                break
+            }
+            
+            if lineIndex == endLine {
+                endIndex = nextIndex
+                break
+            }
+            
+            // Move past newline if not at end
+            if nextIndex < fullText.endIndex {
+                currentIndex = fullText.index(after: nextIndex)
+            } else {
+                currentIndex = nextIndex
+            }
+        }
+        
+        guard let start = startIndex, let end = endIndex else { return nil }
+        return start..<end
     }
     
     // MARK: - Helpers

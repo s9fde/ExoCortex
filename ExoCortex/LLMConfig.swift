@@ -30,8 +30,15 @@ enum LLMConfig {
     
     // MARK: - Prompt Tags
     
-    /// Tag that triggers a prompt (user writes this followed by their question)
+    /// Tag that triggers a read-only prompt (appends response below)
+    /// Legacy tag, equivalent to readOnlyTag
     static let promptTag = "#p"
+    
+    /// Tag for read-only prompts (appends response below)
+    static let readOnlyTag = "#ro"
+    
+    /// Tag for edit prompts (replaces scoped section with LLM output)
+    static let editTag = "#do"
     
     /// Tag prepended to AI responses for visual identification
     static let responseTag = "#opus45"
@@ -48,6 +55,16 @@ enum LLMConfig {
         Keep responses focused and actionable. The user's context may include their notes, todos, and logs.
         When analyzing todos, prioritize by urgency and importance.
         Format code snippets with proper markdown code blocks.
+        """
+    
+    /// System prompt for edit mode (#do) - instructs LLM to return only modified text
+    static let editSystemPrompt = """
+        You are editing a section of a personal work log.
+        Return ONLY the modified text with the requested changes applied.
+        Do not add explanations, commentary, or markdown code block wrappers.
+        Do not add phrases like "Here is the modified text:" or similar.
+        Preserve the original structure and formatting unless specifically asked to change it.
+        Output only the transformed content, nothing else.
         """
     
     // MARK: - OpenRouter Settings

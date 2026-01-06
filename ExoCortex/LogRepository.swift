@@ -16,14 +16,27 @@ actor LogRepository {
     // MARK: - Properties
     
     private let crypto = CryptoService()
-    private let fileURL: URL
+    private let fileName: String
+    
+    private var fileURL: URL {
+        if let icloudURL = FileManager.default.url(forUbiquityContainerIdentifier: nil)?.appendingPathComponent("Documents") {
+            // Ensure Documents directory exists in iCloud
+            if !FileManager.default.fileExists(atPath: icloudURL.path) {
+                try? FileManager.default.createDirectory(at: icloudURL, withIntermediateDirectories: true)
+            }
+            return icloudURL.appendingPathComponent(fileName)
+        } else {
+            // Fallback to local documents if iCloud is not available
+            let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
+            return documents.appendingPathComponent(fileName)
+        }
+    }
 
     // MARK: - Initialization
     
-    /// Initialize with a specific filename (stored in Documents directory)
+    /// Initialize with a specific filename
     init(fileName: String = "cortex.enc") {
-        let documents = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask).first!
-        self.fileURL = documents.appendingPathComponent(fileName)
+        self.fileName = fileName
     }
 
     // MARK: - File Operations
