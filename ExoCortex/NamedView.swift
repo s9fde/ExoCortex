@@ -186,8 +186,8 @@ final class ViewsManager {
             // Reload views from iCloud
             loadViews()
         case NSUbiquitousKeyValueStoreQuotaViolationChange:
-            // Storage quota exceeded - log but continue with local data
-            print("iCloud KVS quota exceeded")
+            // Storage quota exceeded - continue with local data
+            break
         case NSUbiquitousKeyValueStoreAccountChange:
             // iCloud account changed - reload to get new account's data
             loadViews()
