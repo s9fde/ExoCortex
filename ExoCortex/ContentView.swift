@@ -69,15 +69,15 @@ struct ContentView: View {
 
 /// Password entry screen shown when the log is locked.
 struct LockScreen: View {
-    @ObservedObject var viewModel: LogViewModel
+    @Bindable var viewModel: LogViewModel
     
     var body: some View {
         VStack(spacing: 20) {
             Spacer()
             
-            // App icon/branding
-            Image(systemName: "brain.head.profile")
-                .font(.system(size: 64))
+            // App icon/branding - tornado from SF Symbols 7
+            Image(systemName: "tornado")
+                .font(.system(size: 64, weight: .medium))
                 .foregroundStyle(.tint)
                 .accessibilityHidden(true)
             
@@ -206,7 +206,7 @@ struct SidebarView: View {
 /// Main editor view showing filtered content based on selected view.
 /// Simple plain text editor - no syntax highlighting or complex scroll logic.
 struct LogEditorView: View {
-    var viewModel: LogViewModel
+    @Bindable var viewModel: LogViewModel
     var viewsManager: ViewsManager
     
     var body: some View {
@@ -218,14 +218,30 @@ struct LogEditorView: View {
             
             Divider()
             
-            // Simple text editor with save on focus lost
-            SimpleTextEditor(
-                text: editorText,
-                onFocusLost: {
-                    Task { await viewModel.forceSave() }
+            ScrollViewReader {
+                proxy in
+                SimpleTextEditor(
+                    text: editorText,
+                    onFocusLost: {
+                        Task { await viewModel.forceSave() }
+                    }
+                )
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .onChange(of: viewModel.fullText.count) { _ in
+                    // Scroll to bottom when text is appended (e.g., AI response)
+                    // This is a common heuristic for TextEditor jumping issues.
+                    DispatchQueue.main.async {
+                        proxy.scrollTo("bottom", anchor: .bottom)
+                    }
                 }
-            )
-            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .onAppear {
+                    // Initial scroll to bottom when view appears
+                    DispatchQueue.main.async {
+                        proxy.scrollTo("bottom", anchor: .bottom)
+                    }
+                }
+                .id("bottom") // Add an ID to the TextEditor for scrolling
+            }
         }
         .navigationTitle(viewsManager.selectedView.name)
         #if os(macOS)

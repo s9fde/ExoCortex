@@ -37,15 +37,9 @@ cd ExoCortex
 
 ### 2. Configure API Key (Optional)
 
-For AI features, get an API key from [OpenRouter](https://openrouter.ai/keys) and set it:
+For AI features, get an API key from [OpenRouter](https://openrouter.ai/keys) and set it in the app:
 
-**Option A:** Environment Variable (recommended)
-```bash
-export OPENROUTER_API_KEY="sk-or-v1-your-key-here"
-```
-
-**Option B:** Edit the config file
-Edit `ExoCortex/LLMConfig.swift` and replace `YOUR_API_KEY_HERE` with your key.
+Open the app, tap Settings → OpenRouter API Key, and paste your key securely. It will be saved to your Keychain.
 
 ### 3. Build and Run
 

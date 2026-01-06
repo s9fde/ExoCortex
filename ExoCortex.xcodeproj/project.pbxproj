@@ -10,9 +10,22 @@
 		E2934D3F2F046A3E0040AD41 /* ExoCortex.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = ExoCortex.app; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
+/* Begin PBXFileSystemSynchronizedBuildFileExceptionSet section */
+		E2934D502F046A3F0040AD41 /* PBXFileSystemSynchronizedBuildFileExceptionSet */ = {
+			isa = PBXFileSystemSynchronizedBuildFileExceptionSet;
+			membershipExceptions = (
+				Info.plist,
+			);
+			target = E2934D3E2F046A3E0040AD41 /* ExoCortex */;
+		};
+/* End PBXFileSystemSynchronizedBuildFileExceptionSet section */
+
 /* Begin PBXFileSystemSynchronizedRootGroup section */
 		E2934D412F046A3E0040AD41 /* ExoCortex */ = {
 			isa = PBXFileSystemSynchronizedRootGroup;
+			exceptions = (
+				E2934D502F046A3F0040AD41 /* PBXFileSystemSynchronizedBuildFileExceptionSet */,
+			);
 			path = ExoCortex;
 			sourceTree = "<group>";
 		};

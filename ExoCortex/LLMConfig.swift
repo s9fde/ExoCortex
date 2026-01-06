@@ -16,10 +16,10 @@ enum LLMConfig {
     
     // MARK: - API Configuration
     
-    /// Your OpenRouter API key - get one at https://openrouter.ai/keys
-    /// ⚠️ Replace with your actual API key before use
-    /// Set via environment variable OPENROUTER_API_KEY or edit this value
-    static let apiKey = ProcessInfo.processInfo.environment["OPENROUTER_API_KEY"] ?? "YOUR_API_KEY_HERE"
+    /// Your OpenRouter API key - loaded from Keychain at runtime
+    /// Set via Settings view → OpenRouter API Key
+    /// Uses keychain for secure storage without environment variables
+    nonisolated(unsafe) static var apiKey = "YOUR_API_KEY_HERE"
     
     /// The model to use for AI responses
     /// Options: "anthropic/claude-opus-4.5", "anthropic/claude-sonnet-4", etc.

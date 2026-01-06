@@ -52,6 +52,8 @@ final class LogViewModel {
     var isLoading = false
     var password = ""
     var keychainStatus: String?
+    var apiKeyInput: String = "" // For binding to settings text field
+    var apiKeyStatus: String?      // For displaying status in settings
     var fullText = "" {
         didSet { textDidChange(oldValue: oldValue) }
     }
@@ -103,7 +105,16 @@ final class LogViewModel {
     }
 
     convenience init() {
-        self.init(repository: LogRepository(), keychain: KeychainService())
+        self.init(repository: LogRepository(), keychain: KeychainService.shared)
+        // Call postInit after full initialization
+        postInit()
+    }
+    
+    // Post-init setup for async operations
+    private func postInit() {
+        Task {
+            await loadAPIKeyFromKeychain(initialLoad: true)
+        }
     }
 
     // MARK: - Authentication
@@ -176,6 +187,55 @@ final class LogViewModel {
                 keychainStatus = "Saved password cleared"
             } catch {
                 keychainStatus = "Failed to clear password"
+            }
+        }
+    }
+
+    // MARK: - API Key Management
+    
+    /// Load API key from keychain and set to LLMConfig
+    func loadAPIKeyFromKeychain(initialLoad: Bool = false) async {
+        do {
+            if let key = try await keychain.loadAPIKey() {
+                LLMConfig.apiKey = key
+                self.apiKeyInput = key
+                self.apiKeyStatus = "API Key loaded."
+            } else if initialLoad {
+                // Only set message on initial load if no key found (not an error)
+                self.apiKeyStatus = "No API Key found."
+            }
+        } catch {
+            self.apiKeyStatus = "Failed to load API Key: \(error.localizedDescription)"
+        }
+    }
+    
+    /// Save API key to keychain and set to LLMConfig
+    func saveAPIKeyToKeychain() {
+        Task {
+            guard !apiKeyInput.isEmpty else {
+                apiKeyStatus = "API Key cannot be empty."
+                return
+            }
+            do {
+                try await keychain.saveAPIKey(apiKeyInput)
+                LLMConfig.apiKey = apiKeyInput
+                apiKeyStatus = "API Key saved."
+            } catch {
+                apiKeyStatus = "Failed to save API Key: \(error.localizedDescription)"
+            }
+        }
+    }
+    
+    /// Clear API key from keychain and LLMConfig
+    func clearAPIKeyFromKeychain() {
+        Task {
+            do {
+                try await keychain.clearAPIKey()
+                LLMConfig.apiKey = "YOUR_API_KEY_HERE" // Reset to default placeholder
+                apiKeyInput = ""
+                apiKeyStatus = "API Key cleared."
+            } catch {
+                apiKeyStatus = "Failed to clear API Key: \(error.localizedDescription)"
             }
         }
     }
@@ -424,7 +484,8 @@ final class LogViewModel {
     }
     
     private func detectAndProcessPrompt(oldText: String, newText: String) {
-        guard !isStreaming else { return }
+        // Guard against both streaming AND streaming-style appends (prevents infinite recursion)
+        guard !isStreaming && !isStreamingAppend else { return }
         
         // Check if a newline was added (Enter key pressed)
         let oldNewlineCount = oldText.filter { $0 == "\n" }.count

@@ -109,7 +109,7 @@ struct SettingsView: View {
     // MARK: - Security Section
     
     private var securitySection: some View {
-        Section("Security") {
+        Section {
             Button {
                 viewModel.rememberPasswordInKeychain()
             } label: {
@@ -127,9 +127,44 @@ struct SettingsView: View {
             if let status = viewModel.keychainStatus {
                 Text(status)
                     .font(.caption)
-                    .foregroundStyle(status.contains("saved") || status.contains("cleared") ? .green : .red)
+                    .foregroundStyle(statusColor(for: status))
                     .textSelection(.enabled)
                     .accessibilityLabel("Keychain status: \(status)")
+            }
+        }
+        
+        Section("OpenRouter API Key") {
+            SecureField("API Key", text: Binding(
+                get: { viewModel.apiKeyInput },
+                set: { viewModel.apiKeyInput = $0 }
+            ))
+                .textContentType(.password)
+                .disableAutocorrection(true)
+            
+            HStack {
+                Button {
+                    viewModel.saveAPIKeyToKeychain()
+                } label: {
+                    Label("Save API Key", systemImage: "key")
+                }
+                .accessibilityHint("Saves the OpenRouter API Key securely to your keychain")
+                
+                Spacer()
+                
+                Button(role: .destructive) {
+                    viewModel.clearAPIKeyFromKeychain()
+                } label: {
+                    Label("Clear API Key", systemImage: "key.slash")
+                }
+                .accessibilityHint("Removes the OpenRouter API Key from your keychain")
+            }
+            
+            if let status = viewModel.apiKeyStatus {
+                Text(status)
+                    .font(.caption)
+                    .foregroundStyle(statusColor(for: status))
+                    .textSelection(.enabled)
+                    .accessibilityLabel("API Key status: \(status)")
             }
         }
     }
@@ -159,6 +194,10 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
             }
         }
+    }
+    
+    private func statusColor(for status: String) -> Color {
+        status.contains("saved") || status.contains("cleared") || status.contains("loaded") ? .green : .red
     }
 }
 
