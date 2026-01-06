@@ -11,8 +11,8 @@ import SwiftUI
 
 /// Settings screen for managing views and security preferences.
 struct SettingsView: View {
-    @ObservedObject var viewModel: LogViewModel
-    @ObservedObject var viewsManager: ViewsManager
+    var viewModel: LogViewModel
+    var viewsManager: ViewsManager
     
     /// New view being created
     @State private var showingNewViewSheet = false
@@ -166,7 +166,7 @@ struct SettingsView: View {
 
 /// Sheet for creating or editing a view.
 struct ViewEditSheet: View {
-    @ObservedObject var viewsManager: ViewsManager
+    var viewsManager: ViewsManager
     
     /// The view being edited (nil for new view)
     var view: NamedView?

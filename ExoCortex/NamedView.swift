@@ -61,28 +61,50 @@ struct NamedView: Identifiable, Codable, Equatable, Hashable {
     ]
 }
 
+// MARK: - iCloud Availability
+
+/// Set to true when Apple Developer Program enrollment is active.
+/// When false, falls back to local UserDefaults storage.
+/// Change to `true` after enrollment is confirmed (typically 24-48 hours).
+private let iCloudSyncEnabled = false
+
 // MARK: - Views Manager
 
-/// Manages the collection of named views, persisting to UserDefaults.
+/// Manages the collection of named views, persisting to iCloud via NSUbiquitousKeyValueStore.
+/// This enables automatic sync of views between macOS and iOS devices.
+/// Falls back to UserDefaults when iCloud is not available.
 @MainActor
-final class ViewsManager: ObservableObject {
+@Observable
+final class ViewsManager {
     
-    // MARK: - Published State
+    // MARK: - State
     
     /// All available views (built-in + user-created)
-    @Published var views: [NamedView] = [.all]
+    var views: [NamedView] = [.all]
     
     /// Currently selected view
-    @Published var selectedView: NamedView = .all
+    var selectedView: NamedView = .all
     
     // MARK: - Private
     
     private let storageKey = "namedViews"
+    private let iCloudStore = NSUbiquitousKeyValueStore.default
+    private nonisolated(unsafe) var notificationObserver: (any NSObjectProtocol)?
     
     // MARK: - Initialization
     
     init() {
         loadViews()
+        if iCloudSyncEnabled {
+            setupiCloudObserver()
+            iCloudStore.synchronize()
+        }
+    }
+    
+    deinit {
+        if let observer = notificationObserver {
+            NotificationCenter.default.removeObserver(observer)
+        }
     }
     
     // MARK: - View Management
@@ -131,10 +153,73 @@ final class ViewsManager: ObservableObject {
         selectedView = view
     }
     
+    // MARK: - iCloud Sync
+    
+    /// Set up observer for external iCloud changes
+    private func setupiCloudObserver() {
+        notificationObserver = NotificationCenter.default.addObserver(
+            forName: NSUbiquitousKeyValueStore.didChangeExternallyNotification,
+            object: iCloudStore,
+            queue: .main
+        ) { [weak self] notification in
+            // Extract userInfo on callback thread before crossing actor boundary
+            guard let userInfo = notification.userInfo,
+                  let changeReason = userInfo[NSUbiquitousKeyValueStoreChangeReasonKey] as? Int,
+                  let changedKeys = userInfo[NSUbiquitousKeyValueStoreChangedKeysKey] as? [String] else {
+                return
+            }
+            Task { @MainActor in
+                self?.handleiCloudChange(changeReason: changeReason, changedKeys: changedKeys)
+            }
+        }
+    }
+    
+    /// Handle changes from another device
+    private func handleiCloudChange(changeReason: Int, changedKeys: [String]) {
+        // Check if our key was affected
+        guard changedKeys.contains(storageKey) else { return }
+        
+        switch changeReason {
+        case NSUbiquitousKeyValueStoreServerChange,
+             NSUbiquitousKeyValueStoreInitialSyncChange:
+            // Reload views from iCloud
+            loadViews()
+        case NSUbiquitousKeyValueStoreQuotaViolationChange:
+            // Storage quota exceeded - log but continue with local data
+            print("iCloud KVS quota exceeded")
+        case NSUbiquitousKeyValueStoreAccountChange:
+            // iCloud account changed - reload to get new account's data
+            loadViews()
+        default:
+            break
+        }
+    }
+    
     // MARK: - Persistence
     
     private func loadViews() {
-        guard let data = UserDefaults.standard.data(forKey: storageKey),
+        let data: Data?
+        
+        if iCloudSyncEnabled {
+            // Try iCloud first, fall back to UserDefaults for migration
+            if let iCloudData = iCloudStore.data(forKey: storageKey) {
+                data = iCloudData
+            } else if let localData = UserDefaults.standard.data(forKey: storageKey) {
+                // Migration: move existing local data to iCloud
+                data = localData
+                iCloudStore.set(localData, forKey: storageKey)
+                iCloudStore.synchronize()
+                // Clear local copy after migration
+                UserDefaults.standard.removeObject(forKey: storageKey)
+            } else {
+                data = nil
+            }
+        } else {
+            // iCloud disabled - use local UserDefaults only
+            data = UserDefaults.standard.data(forKey: storageKey)
+        }
+        
+        guard let data = data,
               let decoded = try? JSONDecoder().decode([NamedView].self, from: data) else {
             // Start with default views
             views = [.all]
@@ -150,7 +235,12 @@ final class ViewsManager: ObservableObject {
         // Only save user-created views
         let toSave = views.filter { !$0.isBuiltIn }
         if let encoded = try? JSONEncoder().encode(toSave) {
-            UserDefaults.standard.set(encoded, forKey: storageKey)
+            if iCloudSyncEnabled {
+                iCloudStore.set(encoded, forKey: storageKey)
+                iCloudStore.synchronize()
+            } else {
+                UserDefaults.standard.set(encoded, forKey: storageKey)
+            }
         }
     }
 }

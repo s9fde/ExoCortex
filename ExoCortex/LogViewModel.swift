@@ -6,15 +6,20 @@
 //
 
 import Foundation
-import Combine
+import Observation
 import LocalAuthentication
 
 // MARK: - Log View Model
 
 /// Main view model orchestrating log functionality including encryption,
 /// filtering, todo management, and AI prompt processing.
+///
+/// This class is the central state manager for the ExoCortex application,
+/// handling the lifecycle of the encrypted log and coordinating with
+/// various services for persistence, security, and AI features.
 @MainActor
-final class LogViewModel: ObservableObject {
+@Observable
+final class LogViewModel {
     
     // MARK: - Types
     
@@ -33,28 +38,36 @@ final class LogViewModel: ObservableObject {
         let isTodo: Bool
         let isDone: Bool
     }
-
-    // MARK: - Published State
     
-    @Published var isLocked = true
-    @Published var isLoading = false
-    @Published var password = ""
-    @Published var keychainStatus: String?
-    @Published var fullText = "" {
+    /// Entry in the LLM undo stack for recovering from AI edits
+    struct LLMUndoEntry {
+        let fullText: String
+        let label: String
+        let timestamp: Date
+    }
+
+    // MARK: - State
+    
+    var isLocked = true
+    var isLoading = false
+    var password = ""
+    var keychainStatus: String?
+    var fullText = "" {
         didSet { textDidChange(oldValue: oldValue) }
     }
-    @Published var filterText = "" {
+    var filterText = "" {
         didSet { applyFilter() }
     }
-    @Published var filteredLines: [LineItem] = []
-    @Published var filteredText = "" {
+    var filteredLines: [LineItem] = []
+    var filteredText = "" {
         didSet { filteredTextDidChange() }
     }
-    @Published var savedFilters: [String] = []
-    @Published var unlockError: String?
-    @Published var filterError: String?
-    @Published var saveStatus: SaveStatus = .idle
-    @Published var isStreaming = false
+    var savedFilters: [String] = []
+    var unlockError: String?
+    var filterError: String?
+    var saveStatus: SaveStatus = .idle
+    var isStreaming = false
+    private(set) var canUndoLLM = false
 
     // MARK: - Dependencies
     
@@ -71,6 +84,15 @@ final class LogViewModel: ObservableObject {
     private var previousText = ""
     private var isStreamingAppend = false
     private var isUpdatingFilteredText = false
+    
+    // LLM Undo Stack
+    private var llmUndoStack: [LLMUndoEntry] = []
+    private let maxUndoLevels = 3
+    
+    // Edit Mode State
+    private var editPromptLineIndex: Int?
+    private var editRawPrompt: String = ""  // Store raw prompt to re-resolve at apply time
+    private var accumulatedEditResponse = ""
 
     // MARK: - Initialization
     
@@ -208,6 +230,37 @@ final class LogViewModel: ObservableObject {
         streamTask?.cancel()
         streamTask = nil
         isStreaming = false
+        // Reset edit mode state if cancelled mid-edit
+        editPromptLineIndex = nil
+        editRawPrompt = ""
+        accumulatedEditResponse = ""
+    }
+    
+    // MARK: - LLM Undo
+    
+    /// Push current state to undo stack before LLM edit
+    private func pushLLMUndo(label: String) {
+        llmUndoStack.append(LLMUndoEntry(
+            fullText: fullText,
+            label: label,
+            timestamp: Date()
+        ))
+        if llmUndoStack.count > maxUndoLevels {
+            llmUndoStack.removeFirst()
+        }
+        canUndoLLM = true
+    }
+    
+    /// Undo the last LLM edit
+    /// - Returns: True if undo was performed, false if stack was empty
+    @discardableResult
+    func undoLLM() -> Bool {
+        guard let previous = llmUndoStack.popLast() else { return false }
+        isStreamingAppend = true  // Prevent triggering prompt detection
+        fullText = previous.fullText
+        isStreamingAppend = false
+        canUndoLLM = !llmUndoStack.isEmpty
+        return true
     }
     
     /// Insert a date separator line at the end of the log
@@ -248,6 +301,8 @@ final class LogViewModel: ObservableObject {
         
         applyFilter()
         // Note: No more auto-save debounce - saves only on focus lost, lock, or app close
+        // This conforms to Apple HID standards for document-based apps where saving
+        // is explicit or tied to lifecycle events rather than every keystroke.
         detectAndProcessPrompt(oldText: oldValue, newText: fullText)
         previousText = fullText
     }
@@ -362,6 +417,12 @@ final class LogViewModel: ObservableObject {
     
     // MARK: - LLM Integration
     
+    /// Detected prompt type
+    private enum PromptType {
+        case readOnly   // #p or #ro - append response
+        case edit       // #do - replace scoped section
+    }
+    
     private func detectAndProcessPrompt(oldText: String, newText: String) {
         guard !isStreaming else { return }
         
@@ -372,34 +433,57 @@ final class LogViewModel: ObservableObject {
         
         let lines = newText.components(separatedBy: "\n")
         
-        // Find unprocessed #p prompts
+        // Find unprocessed prompts (#p, #ro, #do)
         for (index, line) in lines.enumerated() {
             let trimmed = line.trimmingCharacters(in: .whitespaces)
-            guard trimmed.lowercased().hasPrefix(LLMConfig.promptTag.lowercased()) else { continue }
+            let lower = trimmed.lowercased()
+            
+            // Determine prompt type and tag length
+            let (promptType, tagLength): (PromptType?, Int)
+            if lower.hasPrefix(LLMConfig.editTag.lowercased()) {
+                (promptType, tagLength) = (.edit, LLMConfig.editTag.count)
+            } else if lower.hasPrefix(LLMConfig.readOnlyTag.lowercased()) {
+                (promptType, tagLength) = (.readOnly, LLMConfig.readOnlyTag.count)
+            } else if lower.hasPrefix(LLMConfig.promptTag.lowercased()) {
+                (promptType, tagLength) = (.readOnly, LLMConfig.promptTag.count)
+            } else {
+                continue
+            }
+            
+            guard let type = promptType else { continue }
             guard index + 1 < lines.count else { continue }
             
             let nextLine = lines[index + 1].trimmingCharacters(in: .whitespaces).lowercased()
             
-            // Skip if already processed
-            if nextLine.hasPrefix(LLMConfig.responseTag.lowercased()) ||
+            // Skip if already processed or currently processing
+            let lowerLine = line.lowercased()
+            if lowerLine.contains("[processing...]") ||
+               lowerLine.contains("[edit applied]") ||
+               nextLine.hasPrefix(LLMConfig.responseTag.lowercased()) ||
                nextLine.hasPrefix(LLMConfig.errorTag.lowercased()) {
                 continue
             }
             
             // Extract prompt text after tag
-            let tagLength = LLMConfig.promptTag.count
             guard trimmed.count > tagLength else { continue }
             
             let promptIndex = trimmed.index(trimmed.startIndex, offsetBy: tagLength)
             let promptText = String(trimmed[promptIndex...]).trimmingCharacters(in: .whitespaces)
             guard !promptText.isEmpty else { continue }
             
-            processPrompt(promptText)
+            switch type {
+            case .readOnly:
+                processReadOnlyPrompt(promptText)
+            case .edit:
+                processEditPrompt(promptText, promptLineIndex: index)
+            }
             return // Process one at a time
         }
     }
     
-    private func processPrompt(_ rawPrompt: String) {
+    // MARK: - Read-Only Mode (#p, #ro)
+    
+    private func processReadOnlyPrompt(_ rawPrompt: String) {
         cancelStream()
         
         // Resolve @-references to context
@@ -423,11 +507,11 @@ final class LogViewModel: ObservableObject {
         isStreaming = true
         
         streamTask = Task { [weak self] in
-            await self?.streamResponse(message: fullMessage)
+            await self?.streamReadOnlyResponse(message: fullMessage)
         }
     }
     
-    private func streamResponse(message: String) async {
+    private func streamReadOnlyResponse(message: String) async {
         do {
             let stream = await openRouter.stream(userMessage: message)
             
@@ -442,6 +526,158 @@ final class LogViewModel: ObservableObject {
             appendToText("\n\(LLMConfig.errorTag) \(error.localizedDescription)\n---\n")
             isStreaming = false
         }
+    }
+    
+    // MARK: - Edit Mode (#do)
+    
+    private func processEditPrompt(_ rawPrompt: String, promptLineIndex: Int) {
+        cancelStream()
+        
+        // Set streaming flag IMMEDIATELY to prevent re-entry during error handling
+        // This fixes infinite recursion when appendToText() triggers textDidChange()
+        isStreaming = true
+        
+        // Resolve @-references to validate scope before proceeding
+        let resolution = contextResolver.resolve(prompt: rawPrompt, fullText: fullText)
+        
+        // Validate scope for edit mode
+        if resolution.scopeCount == 0 {
+            appendToText("\n\(LLMConfig.errorTag) #do requires a scope like @today, @week, or @last:N\n")
+            isStreaming = false
+            return
+        }
+        
+        if resolution.scopeCount > 1 {
+            appendToText("\n\(LLMConfig.errorTag) #do supports only one scope (found \(resolution.scopeCount)). Use a single @scope.\n")
+            isStreaming = false
+            return
+        }
+        
+        if !resolution.isEditableScope {
+            appendToText("\n\(LLMConfig.errorTag) #do requires a contiguous scope (@today, @week, @last:N, @log). @tag and @todos are non-contiguous.\n")
+            isStreaming = false
+            return
+        }
+        
+        guard let context = resolution.context else {
+            appendToText("\n\(LLMConfig.errorTag) Scope is empty - nothing to edit.\n")
+            isStreaming = false
+            return
+        }
+        
+        // Push undo state BEFORE making changes
+        let labelPreview = String(resolution.cleanPrompt.prefix(40))
+        pushLLMUndo(label: "Before: \(labelPreview)...")
+        
+        // Mark the #do line IMMEDIATELY as processing to prevent re-detection
+        markPromptLineAsProcessing(promptLineIndex)
+        
+        // Build edit message
+        let editMessage = """
+        Modify this text according to the instruction below.
+        Return ONLY the modified text, nothing else.
+        
+        TEXT TO MODIFY:
+        \(context)
+        
+        INSTRUCTION: \(resolution.cleanPrompt)
+        """
+        
+        // Store edit state - save raw prompt to re-resolve at apply time (race condition fix)
+        editPromptLineIndex = promptLineIndex
+        editRawPrompt = rawPrompt
+        accumulatedEditResponse = ""
+        
+        isStreaming = true
+        
+        streamTask = Task { [weak self] in
+            await self?.streamEditResponse(message: editMessage)
+        }
+    }
+    
+    /// Mark a prompt line as being processed (prevents re-detection during streaming)
+    private func markPromptLineAsProcessing(_ lineIndex: Int) {
+        isStreamingAppend = true
+        var lines = fullText.components(separatedBy: "\n")
+        if lineIndex < lines.count {
+            lines[lineIndex] = lines[lineIndex] + " [processing...]"
+            fullText = lines.joined(separator: "\n")
+        }
+        isStreamingAppend = false
+    }
+    
+    private func streamEditResponse(message: String) async {
+        do {
+            let stream = await openRouter.streamEdit(userMessage: message)
+            
+            for try await chunk in stream {
+                if Task.isCancelled { break }
+                accumulatedEditResponse += chunk
+            }
+            
+            // Apply the edit
+            await applyEdit()
+            isStreaming = false
+        } catch {
+            appendToText("\n\(LLMConfig.errorTag) \(error.localizedDescription)\n")
+            isStreaming = false
+        }
+    }
+    
+    private func applyEdit() async {
+        guard !editRawPrompt.isEmpty else { return }
+        
+        isStreamingAppend = true  // Prevent triggering prompt detection
+        
+        // Get the modified content, trimming any wrapper text the LLM might have added
+        var modifiedContent = accumulatedEditResponse.trimmingCharacters(in: .whitespacesAndNewlines)
+        
+        // Strip markdown code block wrapper if LLM added one
+        if modifiedContent.hasPrefix("```") {
+            if let endOfFirstLine = modifiedContent.firstIndex(of: "\n") {
+                modifiedContent = String(modifiedContent[modifiedContent.index(after: endOfFirstLine)...])
+            }
+            if modifiedContent.hasSuffix("```") {
+                modifiedContent = String(modifiedContent.dropLast(3)).trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+        }
+        
+        // CRITICAL: Re-resolve scope on CURRENT fullText to get accurate range
+        // This fixes race condition where user edits during streaming would corrupt text
+        let resolution = contextResolver.resolve(prompt: editRawPrompt, fullText: fullText)
+        
+        guard let range = resolution.contextRange else {
+            // Scope no longer valid - user may have edited it away
+            // Restore from undo stack (already pushed) and report error
+            _ = undoLLM()
+            appendToText("\n\(LLMConfig.errorTag) Edit failed - scope changed during processing. Undo applied.\n")
+            editPromptLineIndex = nil
+            editRawPrompt = ""
+            accumulatedEditResponse = ""
+            isStreamingAppend = false
+            return
+        }
+        
+        // Replace the scoped section with modified content FIRST
+        var newText = fullText
+        newText.replaceSubrange(range, with: modifiedContent)
+        
+        // Then mark the #do line as complete (change [processing...] to [edit applied])
+        var lines = newText.components(separatedBy: "\n")
+        if let promptIndex = editPromptLineIndex, promptIndex < lines.count {
+            // Replace the processing marker with applied marker
+            lines[promptIndex] = lines[promptIndex].replacingOccurrences(of: " [processing...]", with: " [edit applied]")
+        }
+        newText = lines.joined(separator: "\n")
+        
+        fullText = newText
+        
+        isStreamingAppend = false
+        
+        // Reset edit state
+        editPromptLineIndex = nil
+        editRawPrompt = ""
+        accumulatedEditResponse = ""
     }
     
     /// Append text without triggering prompt detection
