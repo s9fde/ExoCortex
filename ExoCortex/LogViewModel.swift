@@ -31,6 +31,14 @@ final class LogViewModel {
         case error(String)
     }
 
+    /// Current biometric capability and eligibility state
+    enum BiometricStatus: Equatable {
+        case checking
+        case available(type: LABiometryType)
+        case missingPassword
+        case unavailable(String)
+    }
+
     /// Represents a single line in the filtered view
     struct LineItem: Identifiable, Equatable {
         let id: Int      // Line index in fullText
@@ -54,6 +62,7 @@ final class LogViewModel {
     var keychainStatus: String?
     var apiKeyInput: String = "" // For binding to settings text field
     var apiKeyStatus: String?      // For displaying status in settings
+    var biometricStatus: BiometricStatus = .checking
     var fullText = "" {
         didSet { textDidChange(oldValue: oldValue) }
     }
@@ -68,7 +77,7 @@ final class LogViewModel {
     var unlockError: String?
     var filterError: String?
     var saveStatus: SaveStatus = .idle
-    var isStreaming = false
+    var isFetching = false
     private(set) var canUndoLLM = false
 
     // MARK: - Dependencies
@@ -82,9 +91,8 @@ final class LogViewModel {
     // MARK: - Private State
     
     private var activePassword: String?
-    private var streamTask: Task<Void, Never>?
+    private var fetchTask: Task<Void, Never>?
     private var previousText = ""
-    private var isStreamingAppend = false
     private var isUpdatingFilteredText = false
     
     // LLM Undo Stack
@@ -94,7 +102,6 @@ final class LogViewModel {
     // Edit Mode State
     private var editPromptLineIndex: Int?
     private var editRawPrompt: String = ""  // Store raw prompt to re-resolve at apply time
-    private var accumulatedEditResponse = ""
 
     // MARK: - Initialization
     
@@ -112,6 +119,7 @@ final class LogViewModel {
     
     // Post-init setup for async operations
     private func postInit() {
+        refreshBiometricStatus()
         Task {
             await loadAPIKeyFromKeychain(initialLoad: true)
         }
@@ -130,8 +138,57 @@ final class LogViewModel {
         Task { await unlock(using: input) }
     }
 
+    /// True when biometric unlock is possible
+    var canUseBiometricUnlock: Bool {
+        if case .available = biometricStatus { return true }
+        return false
+    }
+
+    /// Re-evaluate biometric eligibility (password stored + device capability)
+    func refreshBiometricStatus() {
+        // Check device capability first
+        let context = LAContext()
+        var error: NSError?
+        let canEvaluate = context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &error)
+        
+        // Then check for stored password
+        let hasPassword = keychain.hasStoredPassword()
+
+        if !canEvaluate {
+            // Device doesn't support biometrics
+            let message = error?.localizedDescription ?? "Face ID / Touch ID unavailable."
+            biometricStatus = .unavailable(message)
+        } else if !hasPassword {
+            // Device supports biometrics but no password saved
+            biometricStatus = .missingPassword
+        } else {
+            // Both conditions met
+            biometricStatus = .available(type: context.biometryType)
+        }
+    }
+
     /// Attempt unlock using biometric authentication
-    func unlockWithBiometrics() {
+    func unlockWithBiometrics(completion: (() -> Void)? = nil) {
+        unlockError = nil
+        refreshBiometricStatus()
+
+        switch biometricStatus {
+        case .missingPassword:
+            unlockError = "Save your password in Settings to enable Face ID / Touch ID."
+            completion?()
+            return
+        case .unavailable(let reason):
+            unlockError = reason
+            completion?()
+            return
+        case .available:
+            break
+        case .checking:
+            unlockError = "Checking biometric availability…"
+            completion?()
+            return
+        }
+
         Task {
             do {
                 let retrieved = try await keychain.loadPasswordWithBiometrics(reason: "Unlock ExoCortex")
@@ -139,14 +196,15 @@ final class LogViewModel {
             } catch let error as KeychainServiceError {
                 unlockError = error.localizedDescription
             } catch {
-                unlockError = "Biometric unlock failed"
+                unlockError = "Biometric unlock failed. Try your password."
             }
+            completion?()
         }
     }
 
     /// Lock the log and clear sensitive data (saves before locking)
     func lock() {
-        cancelStream()
+        cancelFetch()
         // Force save before locking
         Task {
             await forceSave()
@@ -157,24 +215,35 @@ final class LogViewModel {
             filteredLines = []
             isLocked = true
             saveStatus = .idle
+            refreshBiometricStatus()
         }
     }
 
     /// Store password in keychain with biometric protection for later retrieval
     func rememberPasswordInKeychain() {
         guard let pwd = activePassword, !pwd.isEmpty else {
-            keychainStatus = "No password to save"
+            keychainStatus = "No password to save - unlock the app first"
             return
         }
-        keychainStatus = nil
+        keychainStatus = "Saving..."
         Task {
             do {
                 try await keychain.savePassword(pwd)
-                keychainStatus = "Password saved - use biometrics to unlock"
+                // Small delay to ensure keychain is synced
+                try? await Task.sleep(for: .milliseconds(100))
+                // Verify the password was saved
+                if keychain.hasStoredPassword() {
+                    keychainStatus = "Password saved - biometric unlock enabled"
+                } else {
+                    keychainStatus = "Password saved but verification failed"
+                }
+                refreshBiometricStatus()
             } catch let error as KeychainServiceError {
                 keychainStatus = error.localizedDescription
+                refreshBiometricStatus()
             } catch {
                 keychainStatus = "Failed: \(error.localizedDescription)"
+                refreshBiometricStatus()
             }
         }
     }
@@ -182,6 +251,7 @@ final class LogViewModel {
     /// Remove stored password from keychain
     func clearKeychainPassword() {
         Task {
+            defer { refreshBiometricStatus() }
             do {
                 try await keychain.deletePassword()
                 keychainStatus = "Saved password cleared"
@@ -285,15 +355,14 @@ final class LogViewModel {
         fullText = mutable.joined(separator: "\n")
     }
     
-    /// Cancel any ongoing AI stream
-    func cancelStream() {
-        streamTask?.cancel()
-        streamTask = nil
-        isStreaming = false
+    /// Cancel any ongoing AI fetch
+    func cancelFetch() {
+        fetchTask?.cancel()
+        fetchTask = nil
+        isFetching = false
         // Reset edit mode state if cancelled mid-edit
         editPromptLineIndex = nil
         editRawPrompt = ""
-        accumulatedEditResponse = ""
     }
     
     // MARK: - LLM Undo
@@ -316,9 +385,7 @@ final class LogViewModel {
     @discardableResult
     func undoLLM() -> Bool {
         guard let previous = llmUndoStack.popLast() else { return false }
-        isStreamingAppend = true  // Prevent triggering prompt detection
         fullText = previous.fullText
-        isStreamingAppend = false
         canUndoLLM = !llmUndoStack.isEmpty
         return true
     }
@@ -346,6 +413,7 @@ final class LogViewModel {
             saveStatus = .saved
             unlockError = nil
             applyFilter()
+            refreshBiometricStatus()
         } catch {
             unlockError = "Invalid password or data"
             isLocked = true
@@ -354,9 +422,9 @@ final class LogViewModel {
     }
 
     private func textDidChange(oldValue: String) {
-        // Cancel stream if user types during streaming
-        if isStreaming && !isStreamingAppend {
-            cancelStream()
+        // Cancel fetch if user types during fetch
+        if isFetching {
+            cancelFetch()
         }
         
         applyFilter()
@@ -484,8 +552,8 @@ final class LogViewModel {
     }
     
     private func detectAndProcessPrompt(oldText: String, newText: String) {
-        // Guard against both streaming AND streaming-style appends (prevents infinite recursion)
-        guard !isStreaming && !isStreamingAppend else { return }
+        // Guard against fetch operations (prevents infinite recursion)
+        guard !isFetching else { return }
         
         // Check if a newline was added (Enter key pressed)
         let oldNewlineCount = oldText.filter { $0 == "\n" }.count
@@ -545,7 +613,7 @@ final class LogViewModel {
     // MARK: - Read-Only Mode (#p, #ro)
     
     private func processReadOnlyPrompt(_ rawPrompt: String) {
-        cancelStream()
+        cancelFetch()
         
         // Resolve @-references to context
         let resolution = contextResolver.resolve(prompt: rawPrompt, fullText: fullText)
@@ -563,40 +631,34 @@ final class LogViewModel {
             fullMessage = resolution.cleanPrompt
         }
         
-        // Insert response tag
+        // Insert response tag and set fetching flag
         appendToText("\(LLMConfig.responseTag) ")
-        isStreaming = true
+        isFetching = true
         
-        streamTask = Task { [weak self] in
-            await self?.streamReadOnlyResponse(message: fullMessage)
+        fetchTask = Task { [weak self] in
+            await self?.fetchReadOnlyResponse(message: fullMessage)
         }
     }
     
-    private func streamReadOnlyResponse(message: String) async {
+    private func fetchReadOnlyResponse(message: String) async {
         do {
-            let stream = await openRouter.stream(userMessage: message)
-            
-            for try await chunk in stream {
-                if Task.isCancelled { break }
-                appendToText(chunk)
-            }
-            
+            let response = try await openRouter.fetch(userMessage: message)
+            appendToText(response)
             appendToText("\n---\n")
-            isStreaming = false
+            isFetching = false
         } catch {
             appendToText("\n\(LLMConfig.errorTag) \(error.localizedDescription)\n---\n")
-            isStreaming = false
+            isFetching = false
         }
     }
     
     // MARK: - Edit Mode (#do)
     
     private func processEditPrompt(_ rawPrompt: String, promptLineIndex: Int) {
-        cancelStream()
+        cancelFetch()
         
-        // Set streaming flag IMMEDIATELY to prevent re-entry during error handling
-        // This fixes infinite recursion when appendToText() triggers textDidChange()
-        isStreaming = true
+        // Set fetching flag IMMEDIATELY to prevent re-entry during error handling
+        isFetching = true
         
         // Resolve @-references to validate scope before proceeding
         let resolution = contextResolver.resolve(prompt: rawPrompt, fullText: fullText)
@@ -604,25 +666,25 @@ final class LogViewModel {
         // Validate scope for edit mode
         if resolution.scopeCount == 0 {
             appendToText("\n\(LLMConfig.errorTag) #do requires a scope like @today, @week, or @last:N\n")
-            isStreaming = false
+            isFetching = false
             return
         }
         
         if resolution.scopeCount > 1 {
             appendToText("\n\(LLMConfig.errorTag) #do supports only one scope (found \(resolution.scopeCount)). Use a single @scope.\n")
-            isStreaming = false
+            isFetching = false
             return
         }
         
         if !resolution.isEditableScope {
             appendToText("\n\(LLMConfig.errorTag) #do requires a contiguous scope (@today, @week, @last:N, @log). @tag and @todos are non-contiguous.\n")
-            isStreaming = false
+            isFetching = false
             return
         }
         
         guard let context = resolution.context else {
             appendToText("\n\(LLMConfig.errorTag) Scope is empty - nothing to edit.\n")
-            isStreaming = false
+            isFetching = false
             return
         }
         
@@ -647,51 +709,41 @@ final class LogViewModel {
         // Store edit state - save raw prompt to re-resolve at apply time (race condition fix)
         editPromptLineIndex = promptLineIndex
         editRawPrompt = rawPrompt
-        accumulatedEditResponse = ""
         
-        isStreaming = true
+        isFetching = true
         
-        streamTask = Task { [weak self] in
-            await self?.streamEditResponse(message: editMessage)
+        fetchTask = Task { [weak self] in
+            await self?.fetchEditResponse(message: editMessage)
         }
     }
     
-    /// Mark a prompt line as being processed (prevents re-detection during streaming)
+    /// Mark a prompt line as being processed (prevents re-detection during fetch)
     private func markPromptLineAsProcessing(_ lineIndex: Int) {
-        isStreamingAppend = true
         var lines = fullText.components(separatedBy: "\n")
         if lineIndex < lines.count {
             lines[lineIndex] = lines[lineIndex] + " [processing...]"
             fullText = lines.joined(separator: "\n")
         }
-        isStreamingAppend = false
     }
     
-    private func streamEditResponse(message: String) async {
+    private func fetchEditResponse(message: String) async {
         do {
-            let stream = await openRouter.streamEdit(userMessage: message)
+            let response = try await openRouter.fetchEdit(userMessage: message)
             
-            for try await chunk in stream {
-                if Task.isCancelled { break }
-                accumulatedEditResponse += chunk
-            }
-            
-            // Apply the edit
-            await applyEdit()
-            isStreaming = false
+            // Apply the edit with the fetched response
+            await applyEdit(response: response)
+            isFetching = false
         } catch {
             appendToText("\n\(LLMConfig.errorTag) \(error.localizedDescription)\n")
-            isStreaming = false
+            isFetching = false
         }
     }
     
-    private func applyEdit() async {
+    private func applyEdit(response: String) async {
         guard !editRawPrompt.isEmpty else { return }
         
-        isStreamingAppend = true  // Prevent triggering prompt detection
-        
         // Get the modified content, trimming any wrapper text the LLM might have added
-        var modifiedContent = accumulatedEditResponse.trimmingCharacters(in: .whitespacesAndNewlines)
+        var modifiedContent = response.trimmingCharacters(in: .whitespacesAndNewlines)
         
         // Strip markdown code block wrapper if LLM added one
         if modifiedContent.hasPrefix("```") {
@@ -704,7 +756,7 @@ final class LogViewModel {
         }
         
         // CRITICAL: Re-resolve scope on CURRENT fullText to get accurate range
-        // This fixes race condition where user edits during streaming would corrupt text
+        // This fixes race condition where user edits during fetch would corrupt text
         let resolution = contextResolver.resolve(prompt: editRawPrompt, fullText: fullText)
         
         guard let range = resolution.contextRange else {
@@ -714,8 +766,6 @@ final class LogViewModel {
             appendToText("\n\(LLMConfig.errorTag) Edit failed - scope changed during processing. Undo applied.\n")
             editPromptLineIndex = nil
             editRawPrompt = ""
-            accumulatedEditResponse = ""
-            isStreamingAppend = false
             return
         }
         
@@ -733,18 +783,13 @@ final class LogViewModel {
         
         fullText = newText
         
-        isStreamingAppend = false
-        
         // Reset edit state
         editPromptLineIndex = nil
         editRawPrompt = ""
-        accumulatedEditResponse = ""
     }
     
     /// Append text without triggering prompt detection
     private func appendToText(_ text: String) {
-        isStreamingAppend = true
         fullText += text
-        isStreamingAppend = false
     }
 }

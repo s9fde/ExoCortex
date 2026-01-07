@@ -16,38 +16,23 @@ struct ExoCortexApp: App {
     /// Shared view model managing log state, encryption, and AI interactions
     @State private var viewModel = LogViewModel()
     
-    /// App lifecycle phase for auto-locking
-    @Environment(\.scenePhase) private var scenePhase
 
     var body: some Scene {
         WindowGroup {
             ContentView()
                 .environment(viewModel)
-                #if os(iOS)
-                .onChange(of: scenePhase) { _, newPhase in
-                    // iOS: Only lock when app goes to background (not just inactive)
-                    // This prevents locking when opening notification center or control center
-                    if newPhase == .background {
-                        viewModel.lock()
-                    }
-                }
-                #endif
                 #if os(macOS)
                 .onReceive(NotificationCenter.default.publisher(for: NSWindow.willCloseNotification)) { notification in
-                    // macOS: Save and lock when window closes
                     if notification.object is NSWindow {
                         viewModel.lock()
                     }
                 }
                 .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
-                    // macOS: Save before app terminates
                     Task { await viewModel.forceSave() }
                 }
                 #endif
         }
         #if os(macOS)
-        .windowStyle(.titleBar)
-        .windowToolbarStyle(.unified)
         .commands {
             SidebarCommands()
             
@@ -74,4 +59,5 @@ struct ExoCortexApp: App {
         }
         #endif
     }
+    
 }
