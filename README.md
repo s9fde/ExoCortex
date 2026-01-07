@@ -1,5 +1,3 @@
-# ExoCortex
-
 An encrypted personal work log for iOS and macOS with AI assistance via OpenRouter.
 
 ![Platform: iOS & macOS](https://img.shields.io/badge/platform-iOS%20%7C%20macOS-blue)
