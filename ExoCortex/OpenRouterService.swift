@@ -2,21 +2,21 @@
 //  OpenRouterService.swift
 //  ExoCortex
 //
-//  Service for streaming chat completions from OpenRouter API.
-//  Supports Claude and other models via SSE streaming.
+//  Service for fetching chat completions from OpenRouter API.
+//  Returns complete responses for simple, high-performance text handling.
 //
 
 import Foundation
 
 // MARK: - OpenRouter Service
 
-/// Actor-based service for streaming chat completions from OpenRouter API.
-/// Handles SSE (Server-Sent Events) stream parsing for real-time responses.
+/// Service for fetching complete chat completions from OpenRouter API.
+/// Returns full responses in a single request for maximum simplicity and performance.
 actor OpenRouterService {
     
     // MARK: - Errors
     
-    enum StreamError: Error, LocalizedError {
+    enum APIError: Error, LocalizedError {
         case invalidAPIKey
         case networkError(String)
         case invalidResponse
@@ -36,46 +36,47 @@ actor OpenRouterService {
         }
     }
     
-    // MARK: - Streaming
+    // MARK: - API Response Types
     
-    /// Stream a chat completion response (read-only mode)
+    private struct APIResponse: Decodable {
+        let choices: [Choice]
+        
+        struct Choice: Decodable {
+            let message: Message
+            
+            struct Message: Decodable {
+                let content: String
+            }
+        }
+    }
+    
+    // MARK: - Fetch Methods
+    
+    /// Fetch a complete chat response (read-only mode)
     /// - Parameter userMessage: The user's prompt (with context already included)
-    /// - Returns: Async stream of text chunks
-    func stream(userMessage: String) -> AsyncThrowingStream<String, Error> {
-        AsyncThrowingStream { continuation in
-            Task {
-                do {
-                    try await performStream(userMessage: userMessage, systemPrompt: LLMConfig.systemPrompt, continuation: continuation)
-                } catch {
-                    continuation.finish(throwing: error)
-                }
-            }
-        }
+    /// - Returns: Complete response text
+    func fetch(userMessage: String) async throws -> String {
+        let response = try await performRequest(userMessage: userMessage, systemPrompt: LLMConfig.systemPrompt)
+        return response
     }
     
-    /// Stream a chat completion response for edit mode (#do)
+    /// Fetch a complete chat response for edit mode (#do)
     /// - Parameter userMessage: The edit instruction with context
-    /// - Returns: Async stream of text chunks
-    func streamEdit(userMessage: String) -> AsyncThrowingStream<String, Error> {
-        AsyncThrowingStream { continuation in
-            Task {
-                do {
-                    try await performStream(userMessage: userMessage, systemPrompt: LLMConfig.editSystemPrompt, continuation: continuation)
-                } catch {
-                    continuation.finish(throwing: error)
-                }
-            }
-        }
+    /// - Returns: Complete response text
+    func fetchEdit(userMessage: String) async throws -> String {
+        let response = try await performRequest(userMessage: userMessage, systemPrompt: LLMConfig.editSystemPrompt)
+        return response
     }
     
-    private func performStream(
+    // MARK: - Private Methods
+    
+    private func performRequest(
         userMessage: String,
-        systemPrompt: String,
-        continuation: AsyncThrowingStream<String, Error>.Continuation
-    ) async throws {
+        systemPrompt: String
+    ) async throws -> String {
         // Validate API key
         guard !LLMConfig.apiKey.contains("YOUR_API_KEY") else {
-            throw StreamError.invalidAPIKey
+            throw APIError.invalidAPIKey
         }
         
         // Build request
@@ -88,7 +89,7 @@ actor OpenRouterService {
         
         let body: [String: Any] = [
             "model": LLMConfig.model,
-            "stream": true,
+            "stream": false,
             "max_tokens": LLMConfig.maxTokens,
             "messages": [
                 ["role": "system", "content": systemPrompt],
@@ -98,83 +99,27 @@ actor OpenRouterService {
         
         request.httpBody = try JSONSerialization.data(withJSONObject: body)
         
-        // Perform streaming request
-        let (bytes, response) = try await URLSession.shared.bytes(for: request)
+        // Perform request
+        let (data, response) = try await URLSession.shared.data(for: request)
         
         guard let httpResponse = response as? HTTPURLResponse else {
-            throw StreamError.invalidResponse
+            throw APIError.invalidResponse
         }
         
         // Handle error responses
         guard httpResponse.statusCode == 200 else {
-            var errorData = Data()
-            for try await byte in bytes {
-                errorData.append(byte)
-            }
-            let errorMessage = String(data: errorData, encoding: .utf8) ?? "Unknown error"
-            throw StreamError.apiError("HTTP \(httpResponse.statusCode): \(errorMessage)")
+            let errorMessage = String(data: data, encoding: .utf8) ?? "Unknown error"
+            throw APIError.apiError("HTTP \(httpResponse.statusCode): \(errorMessage)")
         }
         
-        // Parse SSE stream
-        try await parseSSEStream(bytes: bytes, continuation: continuation)
-    }
-    
-    /// Parse SSE (Server-Sent Events) stream and yield text chunks
-    private func parseSSEStream(
-        bytes: URLSession.AsyncBytes,
-        continuation: AsyncThrowingStream<String, Error>.Continuation
-    ) async throws {
-        var byteBuffer = Data()
+        // Parse JSON response
+        let decoder = JSONDecoder()
+        let apiResponse = try decoder.decode(APIResponse.self, from: data)
         
-        for try await byte in bytes {
-            byteBuffer.append(byte)
-            
-            // Try to decode accumulated bytes as UTF-8 string
-            guard let buffer = String(data: byteBuffer, encoding: .utf8) else {
-                // Incomplete UTF-8 sequence, wait for more bytes
-                continue
-            }
-            
-            // Process complete lines (ending with newline)
-            var remaining = buffer
-            while let newlineIndex = remaining.firstIndex(of: "\n") {
-                let line = String(remaining[..<newlineIndex])
-                remaining = String(remaining[remaining.index(after: newlineIndex)...])
-                
-                // Skip empty lines and non-data lines
-                guard !line.isEmpty, line.hasPrefix("data: ") else { continue }
-                
-                let jsonString = String(line.dropFirst(6))
-                
-                // Check for stream end marker
-                if jsonString == "[DONE]" {
-                    continuation.finish()
-                    return
-                }
-                
-                // Parse JSON and extract content
-                if let content = extractContent(from: jsonString) {
-                    continuation.yield(content)
-                }
-            }
-            
-            // Keep only unprocessed bytes in buffer
-            byteBuffer = remaining.data(using: .utf8) ?? Data()
+        guard let firstChoice = apiResponse.choices.first else {
+            throw APIError.invalidResponse
         }
         
-        continuation.finish()
-    }
-    
-    /// Extract text content from SSE JSON chunk
-    private func extractContent(from jsonString: String) -> String? {
-        guard let data = jsonString.data(using: .utf8),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let choices = json["choices"] as? [[String: Any]],
-              let firstChoice = choices.first,
-              let delta = firstChoice["delta"] as? [String: Any],
-              let content = delta["content"] as? String else {
-            return nil
-        }
-        return content
+        return firstChoice.message.content
     }
 }

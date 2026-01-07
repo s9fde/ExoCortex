@@ -2,8 +2,8 @@
 //  KeychainService.swift
 //  ExoCortex
 //
-//  Modern keychain service for secure password storage with biometric protection.
-//  Uses async/await and proper LAContext management to avoid -34018 errors.
+//  Secure keychain service for password storage with biometric (Touch ID / Face ID) protection.
+//  Follows Apple's recommended patterns for LocalAuthentication + Keychain integration.
 //
 
 import Foundation
@@ -25,7 +25,7 @@ enum KeychainServiceError: Error, LocalizedError {
         case .biometryUnavailable(let reason):
             return "Biometrics unavailable: \(reason)"
         case .biometryFailed(let reason):
-            return "Biometric auth failed: \(reason)"
+            return "Biometric authentication failed: \(reason)"
         case .itemNotFound:
             return "No stored password found"
         case .accessControlCreationFailed(let reason):
@@ -39,69 +39,274 @@ enum KeychainServiceError: Error, LocalizedError {
 
 // MARK: - Keychain Service
 
-/// Service for storing and retrieving passwords in the iOS/macOS Keychain
-/// with biometric (Face ID / Touch ID) protection.
+/// Actor-based service for storing and retrieving passwords in the macOS/iOS Keychain
+/// with optional biometric (Face ID / Touch ID) protection.
 ///
-/// This implementation uses the modern approach of binding an LAContext
-/// during save operations to avoid error -34018 (errSecMissingEntitlement)
-/// in sandboxed macOS apps.
+/// ## Architecture Notes
+/// - Uses `actor` for thread-safe access to keychain operations
+/// - Employs pre-authentication pattern: authenticate with LAContext first, then use
+///   the "warm" context for keychain operations to avoid -34018 errors in sandboxed apps
+/// - Tracks biometric password state in UserDefaults to avoid triggering biometric
+///   prompts when just checking if a password exists
 actor KeychainService {
     
-    // MARK: - Constants
+    // MARK: - Configuration
     
-    /// Service identifier for keychain entries (must match keychain-access-groups in entitlements)
+    /// Service identifier for keychain entries (should match bundle identifier)
     private let service = "com.exocortex.app"
     
-    // Account names for different keychain items
+    /// Account identifier for the encrypted password
     private let passwordAccount = "cortexPassword"
+    
+    /// Account identifier for the API key
     private let apiKeyAccount = "openRouterAPIKey"
     
-    /// Shared instance for convenience
-    static let shared = KeychainService()
-
-    // MARK: - Public Methods
+    /// UserDefaults key for tracking biometric password state
+    private static let biometricEnabledKey = "com.exocortex.biometricPasswordEnabled"
     
-    /// Check if biometrics are available on this device
+    // MARK: - Singleton
+    
+    /// Shared instance for app-wide access
+    static let shared = KeychainService()
+    
+    // MARK: - Biometric Availability
+    
+    /// Checks if biometric authentication is available on this device.
+    /// - Returns: `true` if Touch ID or Face ID is enrolled and available
     nonisolated func biometricsAvailable() -> Bool {
         let context = LAContext()
         var error: NSError?
         return context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &error)
     }
     
-    /// Save password to keychain for biometric-protected retrieval.
+    /// Checks if a biometric-protected password has been stored.
+    /// Uses UserDefaults to avoid triggering biometric prompts.
+    /// - Returns: `true` if a password was previously saved with biometric protection
+    nonisolated func hasStoredPassword() -> Bool {
+        UserDefaults.standard.bool(forKey: KeychainService.biometricEnabledKey)
+    }
+    
+    // MARK: - Password Operations
+    
+    /// Saves a password to the keychain with biometric protection.
     ///
-    /// This method uses an LAContext during save to properly bind the access control
-    /// to the keychain item. This is the modern approach that avoids -34018 errors
-    /// in sandboxed macOS apps.
+    /// This method follows Apple's recommended pattern:
+    /// 1. Create and authenticate an LAContext
+    /// 2. Create access control with biometric requirements
+    /// 3. Bind the authenticated context to the keychain item
     ///
-    /// - Parameter password: The password to store
-    /// - Throws: KeychainServiceError if save fails
+    /// - Parameter password: The password to store securely
+    /// - Throws: `KeychainServiceError` if biometrics unavailable or save fails
     func savePassword(_ password: String) async throws {
         guard let data = password.data(using: .utf8) else {
             throw KeychainServiceError.unexpectedStatus(errSecParam)
         }
         
-        // Create LAContext - must be done and used carefully for iOS biometric UI
+        // Create and configure LAContext for authentication
         let context = LAContext()
         context.touchIDAuthenticationAllowableReuseDuration = 10
         
-        // Verify biometrics are available (can be done synchronously)
+        // Verify biometric availability
         var authError: NSError?
         guard context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &authError) else {
             let reason = authError?.localizedDescription ?? "Biometrics not enrolled or available"
             throw KeychainServiceError.biometryUnavailable(reason)
         }
         
-        // Pre-authenticate to ensure the context is "warm" before keychain operations
-        // This helps avoid -34018 on first save in sandboxed apps
-        // CRITICAL: On iOS, evaluatePolicy callback must not be blocked and UI must be on main thread
+        // Pre-authenticate to "warm" the context
+        try await authenticateWithBiometrics(
+            context: context,
+            reason: "Authenticate to save your password securely"
+        )
+        
+        // Remove any existing entry
+        deleteKeychainItem(service: service, account: passwordAccount)
+        
+        // Create access control requiring current biometric enrollment
+        let accessControl = try createBiometricAccessControl()
+        
+        // Build and execute the add query with the authenticated context
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: passwordAccount,
+            kSecValueData as String: data,
+            kSecAttrAccessControl as String: accessControl,
+            kSecUseAuthenticationContext as String: context
+        ]
+        
+        let status = SecItemAdd(query as CFDictionary, nil)
+        guard status == errSecSuccess else {
+            throw KeychainServiceError.unexpectedStatus(status)
+        }
+        
+        // Track state in UserDefaults
+        UserDefaults.standard.set(true, forKey: KeychainService.biometricEnabledKey)
+    }
+    
+    /// Loads the stored password using biometric authentication.
+    ///
+    /// - Parameter reason: The reason string shown in the biometric prompt
+    /// - Returns: The decrypted password
+    /// - Throws: `KeychainServiceError` if authentication fails or no password stored
+    func loadPasswordWithBiometrics(reason: String) async throws -> String {
+        // Create and configure LAContext
+        let context = LAContext()
+        context.localizedReason = reason
+        context.touchIDAuthenticationAllowableReuseDuration = 30
+        
+        // Verify biometric availability
+        var authError: NSError?
+        guard context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &authError) else {
+            let errorReason = authError?.localizedDescription ?? "Biometrics not available"
+            throw KeychainServiceError.biometryUnavailable(errorReason)
+        }
+        
+        // Pre-authenticate to warm the context
+        try await authenticateWithBiometrics(context: context, reason: reason)
+        
+        // Query keychain with authenticated context
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: passwordAccount,
+            kSecReturnData as String: true,
+            kSecUseAuthenticationContext as String: context
+        ]
+        
+        var item: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &item)
+        
+        switch status {
+        case errSecSuccess:
+            guard let data = item as? Data,
+                  let password = String(data: data, encoding: .utf8) else {
+                throw KeychainServiceError.unexpectedStatus(errSecDecode)
+            }
+            return password
+            
+        case errSecItemNotFound:
+            throw KeychainServiceError.itemNotFound
+            
+        case errSecUserCanceled:
+            throw KeychainServiceError.biometryFailed("User cancelled")
+            
+        case errSecAuthFailed:
+            throw KeychainServiceError.biometryFailed("Authentication failed")
+            
+        case errSecInteractionNotAllowed:
+            throw KeychainServiceError.biometryFailed("Interaction not allowed")
+            
+        default:
+            throw KeychainServiceError.unexpectedStatus(status)
+        }
+    }
+    
+    /// Deletes the stored password from the keychain.
+    /// - Throws: `KeychainServiceError` if deletion fails unexpectedly
+    func deletePassword() async throws {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: passwordAccount
+        ]
+        
+        let status = SecItemDelete(query as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else {
+            throw KeychainServiceError.unexpectedStatus(status)
+        }
+        
+        // Update state tracking
+        UserDefaults.standard.set(false, forKey: KeychainService.biometricEnabledKey)
+    }
+    
+    // MARK: - API Key Operations
+    
+    /// Saves an API key to the keychain without biometric protection.
+    /// API keys use standard keychain protection (device unlock required).
+    /// - Parameter apiKey: The API key to store
+    /// - Throws: `KeychainServiceError` if save fails
+    func saveAPIKey(_ apiKey: String) async throws {
+        guard let data = apiKey.data(using: .utf8) else {
+            throw KeychainServiceError.unexpectedStatus(errSecParam)
+        }
+        
+        // Remove existing entry
+        deleteKeychainItem(service: service, account: apiKeyAccount)
+        
+        // Add new entry with standard protection
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: apiKeyAccount,
+            kSecValueData as String: data,
+            kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+        ]
+        
+        let status = SecItemAdd(query as CFDictionary, nil)
+        guard status == errSecSuccess else {
+            throw KeychainServiceError.unexpectedStatus(status)
+        }
+    }
+    
+    /// Loads the API key from the keychain.
+    /// - Returns: The stored API key, or `nil` if not found
+    /// - Throws: `KeychainServiceError` if load fails unexpectedly
+    func loadAPIKey() async throws -> String? {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: apiKeyAccount,
+            kSecReturnData as String: true
+        ]
+        
+        var item: CFTypeRef?
+        let status = SecItemCopyMatching(query as CFDictionary, &item)
+        
+        switch status {
+        case errSecSuccess:
+            guard let data = item as? Data,
+                  let apiKey = String(data: data, encoding: .utf8) else {
+                throw KeychainServiceError.unexpectedStatus(errSecDecode)
+            }
+            return apiKey
+            
+        case errSecItemNotFound:
+            return nil
+            
+        default:
+            throw KeychainServiceError.unexpectedStatus(status)
+        }
+    }
+    
+    /// Clears the API key from the keychain.
+    /// - Throws: `KeychainServiceError` if deletion fails unexpectedly
+    func clearAPIKey() async throws {
+        let query: [String: Any] = [
+            kSecClass as String: kSecClassGenericPassword,
+            kSecAttrService as String: service,
+            kSecAttrAccount as String: apiKeyAccount
+        ]
+        
+        let status = SecItemDelete(query as CFDictionary)
+        guard status == errSecSuccess || status == errSecItemNotFound else {
+            throw KeychainServiceError.unexpectedStatus(status)
+        }
+    }
+    
+    // MARK: - Private Helpers
+    
+    /// Performs biometric authentication using the provided context.
+    /// - Parameters:
+    ///   - context: The LAContext to authenticate
+    ///   - reason: The reason string shown in the biometric prompt
+    /// - Throws: `KeychainServiceError` if authentication fails
+    private func authenticateWithBiometrics(context: LAContext, reason: String) async throws {
         do {
-            // Use withCheckedThrowingContinuation to properly bridge the callback-based API
-            // The biometric UI presentation is handled internally by LAContext
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
                 context.evaluatePolicy(
                     .deviceOwnerAuthenticationWithBiometrics,
-                    localizedReason: "Authenticate to save your password securely"
+                    localizedReason: reason
                 ) { success, error in
                     if let error = error {
                         continuation.resume(throwing: error)
@@ -117,272 +322,42 @@ actor KeychainService {
         } catch let error as KeychainServiceError {
             throw error
         }
-        
-        // Delete any existing entry first (ignore errors)
-        await deletePasswordSilently()
-        
-        // Create access control requiring biometric authentication for future access
-        // Using .biometryCurrentSet invalidates the item if biometrics change
-        var accessControlError: Unmanaged<CFError>?
+    }
+    
+    /// Creates an access control object requiring biometric authentication.
+    /// Uses `.biometryCurrentSet` to invalidate the item if biometrics change.
+    /// - Returns: A SecAccessControl configured for biometric protection
+    /// - Throws: `KeychainServiceError` if creation fails
+    private func createBiometricAccessControl() throws -> SecAccessControl {
+        var error: Unmanaged<CFError>?
         guard let accessControl = SecAccessControlCreateWithFlags(
             kCFAllocatorDefault,
             kSecAttrAccessibleWhenUnlockedThisDeviceOnly,
             .biometryCurrentSet,
-            &accessControlError
+            &error
         ) else {
-            let errorDesc = accessControlError?.takeRetainedValue().localizedDescription ?? "Unknown error"
+            let errorDesc = error?.takeRetainedValue().localizedDescription ?? "Unknown error"
             throw KeychainServiceError.accessControlCreationFailed(errorDesc)
         }
-        
-        // Perform save on background queue to avoid blocking
-        let status = await withCheckedContinuation { continuation in
-            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-                guard let self = self else { return }
-                
-                // Build query with LAContext attached - critical for avoiding -34018
-                // The context proves entitlement to access the keychain in sandboxed apps
-                let query: [String: Any] = [
-                    kSecClass as String: kSecClassGenericPassword,
-                    kSecAttrService as String: self.service,
-                    kSecAttrAccount as String: self.passwordAccount, // Use passwordAccount
-                    kSecValueData as String: data,
-                    kSecAttrAccessControl as String: accessControl,
-                    kSecUseAuthenticationContext as String: context
-                ]
-                
-                let result = SecItemAdd(query as CFDictionary, nil)
-                continuation.resume(returning: result)
-            }
-        }
-        
-        guard status == errSecSuccess else {
-            throw KeychainServiceError.unexpectedStatus(status)
-        }
-    }
-
-    /// Load password from keychain using biometric authentication.
-    ///
-    /// - Parameter reason: Reason string shown to user during biometric prompt
-    /// - Returns: The stored password
-    /// - Throws: KeychainServiceError if load fails
-    func loadPasswordWithBiometrics(reason: String) async throws -> String {
-        let context = LAContext()
-        // Use LAContext.localizedReason instead of deprecated kSecUseOperationPrompt
-        context.localizedReason = reason
-        context.touchIDAuthenticationAllowableReuseDuration = 10
-        
-        // Verify biometrics availability
-        var authError: NSError?
-        guard context.canEvaluatePolicy(.deviceOwnerAuthenticationWithBiometrics, error: &authError) else {
-            let errorReason = authError?.localizedDescription ?? "Biometrics not available"
-            throw KeychainServiceError.biometryUnavailable(errorReason)
-        }
-        
-        // Perform on background thread as it blocks for biometric auth
-        return try await withCheckedThrowingContinuation { continuation in
-            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-                guard let self = self else { return }
-                
-                // Query with context - this triggers biometric automatically because
-                // the item was saved with biometric access control
-                // Note: Using only kSecUseAuthenticationContext (localizedReason is set on context)
-                // instead of deprecated kSecUseOperationPrompt
-                let query: [String: Any] = [
-                    kSecClass as String: kSecClassGenericPassword,
-                    kSecAttrService as String: self.service,
-                    kSecAttrAccount as String: self.passwordAccount, // Use passwordAccount
-                    kSecReturnData as String: true,
-                    kSecUseAuthenticationContext as String: context
-                ]
-                
-                var item: CFTypeRef?
-                let status = SecItemCopyMatching(query as CFDictionary, &item)
-                
-                switch status {
-                case errSecSuccess:
-                    guard let data = item as? Data,
-                          let password = String(data: data, encoding: .utf8) else {
-                        continuation.resume(throwing: KeychainServiceError.unexpectedStatus(errSecDecode))
-                        return
-                    }
-                    continuation.resume(returning: password)
-                    
-                case errSecItemNotFound:
-                    continuation.resume(throwing: KeychainServiceError.itemNotFound)
-                    
-                case errSecUserCanceled:
-                    continuation.resume(throwing: KeychainServiceError.biometryFailed("User cancelled"))
-                    
-                case errSecAuthFailed:
-                    continuation.resume(throwing: KeychainServiceError.biometryFailed("Authentication failed"))
-                    
-                case errSecInteractionNotAllowed:
-                    continuation.resume(throwing: KeychainServiceError.biometryFailed("Interaction not allowed"))
-                    
-                default:
-                    continuation.resume(throwing: KeychainServiceError.unexpectedStatus(status))
-                }
-            }
-        }
-    }
-
-    /// Delete stored password from keychain
-    /// - Throws: KeychainServiceError if delete fails (except item not found)
-    func deletePassword() async throws {
-        let status = await performDelete()
-        guard status == errSecSuccess || status == errSecItemNotFound else {
-            throw KeychainServiceError.unexpectedStatus(status)
-        }
+        return accessControl
     }
     
-    /// Save API key to keychain (without biometric protection)
-    /// - Parameter apiKey: The API key to store
-    /// - Throws: KeychainServiceError if save fails
-    func saveAPIKey(_ apiKey: String) async throws {
-        guard let data = apiKey.data(using: .utf8) else {
-            throw KeychainServiceError.unexpectedStatus(errSecParam)
-        }
-        
-        // Delete any existing entry first (ignore errors)
-        await deleteAPIKeySilently()
-        
-        let status = await withCheckedContinuation { continuation in
-            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-                guard let self = self else { return }
-                
-                // Build query without access control (API keys don't need biometric protection)
-                let query: [String: Any] = [
-                    kSecClass as String: kSecClassGenericPassword,
-                    kSecAttrService as String: self.service,
-                    kSecAttrAccount as String: self.apiKeyAccount,
-                    kSecValueData as String: data,
-                    kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly
-                ]
-                
-                let result = SecItemAdd(query as CFDictionary, nil)
-                continuation.resume(returning: result)
-            }
-        }
-        
-        guard status == errSecSuccess else {
-            throw KeychainServiceError.unexpectedStatus(status)
-        }
-    }
-    
-    /// Load API key from keychain
-    /// - Returns: The stored API key or nil if not found
-    /// - Throws: KeychainServiceError if load fails
-    func loadAPIKey() async throws -> String? {
-        return try await withCheckedThrowingContinuation { continuation in
-            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-                guard let self = self else { return }
-                
-                let query: [String: Any] = [
-                    kSecClass as String: kSecClassGenericPassword,
-                    kSecAttrService as String: self.service,
-                    kSecAttrAccount as String: self.apiKeyAccount,
-                    kSecReturnData as String: true
-                ]
-                
-                var item: CFTypeRef?
-                let status = SecItemCopyMatching(query as CFDictionary, &item)
-                
-                switch status {
-                case errSecSuccess:
-                    guard let data = item as? Data,
-                          let apiKey = String(data: data, encoding: .utf8) else {
-                        continuation.resume(throwing: KeychainServiceError.unexpectedStatus(errSecDecode))
-                        return
-                    }
-                    continuation.resume(returning: apiKey)
-                    
-                case errSecItemNotFound:
-                    continuation.resume(returning: nil)
-                    
-                default:
-                    continuation.resume(throwing: KeychainServiceError.unexpectedStatus(status))
-                }
-            }
-        }
-    }
-    
-    /// Clear API key from keychain
-    /// - Throws: KeychainServiceError if delete fails (except item not found)
-    func clearAPIKey() async throws {
-        let status = await performAPIKeyDelete()
-        guard status == errSecSuccess || status == errSecItemNotFound else {
-            throw KeychainServiceError.unexpectedStatus(status)
-        }
-    }
-    
-    /// Check if a password is stored in the keychain
-    /// - Returns: true if a password exists
-    nonisolated func hasStoredPassword() -> Bool {
-        // Use LAContext with interactionNotAllowed instead of deprecated kSecUseAuthenticationUIFail
-        let context = LAContext()
-        context.interactionNotAllowed = true
-        
+    /// Deletes a keychain item silently (ignores errors).
+    /// - Parameters:
+    ///   - service: The service identifier
+    ///   - account: The account identifier
+    private func deleteKeychainItem(service: String, account: String) {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
-            kSecAttrAccount as String: passwordAccount, // Use passwordAccount
-            kSecUseAuthenticationContext as String: context
+            kSecAttrAccount as String: account
         ]
-        
-        let status = SecItemCopyMatching(query as CFDictionary, nil)
-        // errSecInteractionNotAllowed means item exists but needs auth
-        return status == errSecSuccess || status == errSecInteractionNotAllowed
+        _ = SecItemDelete(query as CFDictionary)
     }
     
-    // MARK: - Private Methods
-    
-    /// Delete password without throwing errors
-    private func deletePasswordSilently() async {
-        _ = await performDelete()
-    }
-    
-    /// Perform the actual delete operation
-    private func performDelete() async -> OSStatus {
-        return await withCheckedContinuation { continuation in
-            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-                guard let self = self else { return }
-                
-                let query: [String: Any] = [
-                    kSecClass as String: kSecClassGenericPassword,
-                    kSecAttrService as String: self.service,
-                    kSecAttrAccount as String: self.passwordAccount // Use passwordAccount
-                ]
-                
-                let status = SecItemDelete(query as CFDictionary)
-                continuation.resume(returning: status)
-            }
-        }
-    }
-    
-    /// Delete API key without throwing errors
-    private func deleteAPIKeySilently() async {
-        _ = await performAPIKeyDelete()
-    }
-    
-    /// Perform the actual delete operation for API key
-    private func performAPIKeyDelete() async -> OSStatus {
-        return await withCheckedContinuation { continuation in
-            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-                guard let self = self else { return }
-                
-                let query: [String: Any] = [
-                    kSecClass as String: kSecClassGenericPassword,
-                    kSecAttrService as String: self.service,
-                    kSecAttrAccount as String: self.apiKeyAccount
-                ]
-                
-                let status = SecItemDelete(query as CFDictionary)
-                continuation.resume(returning: status)
-            }
-        }
-    }
-    
-    /// Map LAError to KeychainServiceError
+    /// Maps LocalAuthentication errors to KeychainServiceError.
+    /// - Parameter error: The LAError to map
+    /// - Returns: An appropriate KeychainServiceError
     private func mapLAError(_ error: LAError) -> KeychainServiceError {
         switch error.code {
         case .userCancel:
