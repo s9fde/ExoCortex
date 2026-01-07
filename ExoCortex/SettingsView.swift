@@ -109,62 +109,77 @@ struct SettingsView: View {
     // MARK: - Security Section
     
     private var securitySection: some View {
-        Section {
-            Button {
-                viewModel.rememberPasswordInKeychain()
-            } label: {
-                Label("Save Password with Biometrics", systemImage: "faceid")
-            }
-            .accessibilityHint("Stores your password securely for Face ID or Touch ID unlock")
-            
-            Button(role: .destructive) {
-                viewModel.clearKeychainPassword()
-            } label: {
-                Label("Clear Saved Password", systemImage: "key.slash")
-            }
-            .accessibilityHint("Removes the stored password from the keychain")
-            
-            if let status = viewModel.keychainStatus {
-                Text(status)
-                    .font(.caption)
-                    .foregroundStyle(statusColor(for: status))
-                    .textSelection(.enabled)
-                    .accessibilityLabel("Keychain status: \(status)")
-            }
-        }
-        
-        Section("OpenRouter API Key") {
-            SecureField("API Key", text: Binding(
-                get: { viewModel.apiKeyInput },
-                set: { viewModel.apiKeyInput = $0 }
-            ))
-                .textContentType(.password)
-                .disableAutocorrection(true)
-            
-            HStack {
-                Button {
-                    viewModel.saveAPIKeyToKeychain()
-                } label: {
-                    Label("Save API Key", systemImage: "key")
+        Group {
+            Section {
+                // Show current biometric status
+                HStack {
+                    Text("Biometric Unlock")
+                    Spacer()
+                    Text(biometricStatusText)
+                        .foregroundStyle(.secondary)
                 }
-                .accessibilityHint("Saves the OpenRouter API Key securely to your keychain")
                 
-                Spacer()
+                Button {
+                    viewModel.rememberPasswordInKeychain()
+                } label: {
+                    Label("Save Password with Biometrics", systemImage: biometricIcon)
+                }
+                .accessibilityHint("Stores your password securely for Face ID or Touch ID unlock")
                 
                 Button(role: .destructive) {
-                    viewModel.clearAPIKeyFromKeychain()
+                    viewModel.clearKeychainPassword()
                 } label: {
-                    Label("Clear API Key", systemImage: "key.slash")
+                    Label("Clear Saved Password", systemImage: "key.slash")
                 }
-                .accessibilityHint("Removes the OpenRouter API Key from your keychain")
+                .accessibilityHint("Removes the stored password from the keychain")
+                
+                if let status = viewModel.keychainStatus {
+                    Text(status)
+                        .font(.caption)
+                        .foregroundStyle(statusColor(for: status))
+                        .textSelection(.enabled)
+                        .accessibilityLabel("Keychain status: \(status)")
+                }
+            } header: {
+                Text("Security")
+            } footer: {
+                Text("Save your password to enable biometric unlock on the lock screen.")
             }
             
-            if let status = viewModel.apiKeyStatus {
-                Text(status)
-                    .font(.caption)
-                    .foregroundStyle(statusColor(for: status))
-                    .textSelection(.enabled)
-                    .accessibilityLabel("API Key status: \(status)")
+            Section("OpenRouter API Key") {
+                // API key field - disabled autofill to prevent system password manager
+                SecureField("API Key", text: Binding(
+                    get: { viewModel.apiKeyInput },
+                    set: { viewModel.apiKeyInput = $0 }
+                ))
+                    .textContentType(.init(rawValue: ""))  // Disables autofill suggestions
+                    .disableAutocorrection(true)
+                
+                HStack {
+                    Button {
+                        viewModel.saveAPIKeyToKeychain()
+                    } label: {
+                        Label("Save API Key", systemImage: "key")
+                    }
+                    .accessibilityHint("Saves the OpenRouter API Key securely to your keychain")
+                    
+                    Spacer()
+                    
+                    Button(role: .destructive) {
+                        viewModel.clearAPIKeyFromKeychain()
+                    } label: {
+                        Label("Clear API Key", systemImage: "key.slash")
+                    }
+                    .accessibilityHint("Removes the OpenRouter API Key from your keychain")
+                }
+                
+                if let status = viewModel.apiKeyStatus {
+                    Text(status)
+                        .font(.caption)
+                        .foregroundStyle(statusColor(for: status))
+                        .textSelection(.enabled)
+                        .accessibilityLabel("API Key status: \(status)")
+                }
             }
         }
     }
@@ -197,7 +212,41 @@ struct SettingsView: View {
     }
     
     private func statusColor(for status: String) -> Color {
-        status.contains("saved") || status.contains("cleared") || status.contains("loaded") ? .green : .red
+        status.contains("saved") || status.contains("cleared") || status.contains("loaded") || status.contains("enabled") ? .green : .red
+    }
+    
+    /// Human-readable biometric status for the settings display
+    private var biometricStatusText: String {
+        switch viewModel.biometricStatus {
+        case .checking:
+            return "Checking..."
+        case .available(let type):
+            switch type {
+            case .faceID: return "Enabled (Face ID)"
+            case .touchID: return "Enabled (Touch ID)"
+            case .opticID: return "Enabled (Optic ID)"
+            default: return "Enabled"
+            }
+        case .missingPassword:
+            return "Password not saved"
+        case .unavailable(let reason):
+            return "Unavailable: \(reason)"
+        }
+    }
+    
+    /// System icon for biometric type
+    private var biometricIcon: String {
+        switch viewModel.biometricStatus {
+        case .available(let type):
+            switch type {
+            case .faceID: return "faceid"
+            case .touchID: return "touchid"
+            case .opticID: return "opticid"
+            default: return "person.badge.key"
+            }
+        default:
+            return "faceid" // Default icon for the save button
+        }
     }
 }
 

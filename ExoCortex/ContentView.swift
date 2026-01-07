@@ -6,17 +6,19 @@
 //
 
 import SwiftUI
+import LocalAuthentication
+
+#if os(macOS)
+import AppKit
+#endif
 
 // MARK: - Main Content View
 
-/// Root view with Apple Notes-style sidebar navigation.
+/// Root view with standard sidebar navigation.
 /// Shows lock screen when locked, split view when unlocked.
 struct ContentView: View {
     @Environment(LogViewModel.self) private var viewModel
     @State private var viewsManager = ViewsManager()
-    
-    /// Column visibility for NavigationSplitView
-    @State private var columnVisibility: NavigationSplitViewVisibility = .all
     
     /// Current sidebar selection
     @State private var sidebarSelection: SidebarSelection? = .view(.all)
@@ -34,17 +36,13 @@ struct ContentView: View {
     // MARK: - Main Content (Unlocked)
     
     private var mainContent: some View {
-        NavigationSplitView(columnVisibility: $columnVisibility) {
-            // Sidebar
+        NavigationSplitView {
             SidebarView(viewsManager: viewsManager, selection: $sidebarSelection)
                 .environment(viewModel)
         } detail: {
-            // Detail pane based on selection
             detailContent
         }
-        .navigationSplitViewStyle(.balanced)
         .onChange(of: sidebarSelection) { _, newSelection in
-            // Update viewsManager when a view is selected
             if case .view(let view) = newSelection {
                 viewsManager.selectView(view)
             }
@@ -67,79 +65,180 @@ struct ContentView: View {
 
 // MARK: - Lock Screen
 
-/// Password entry screen shown when the log is locked.
+/// Clean, modern lock screen with animated tornado logo
 struct LockScreen: View {
     @Bindable var viewModel: LogViewModel
+    @FocusState private var passwordFocused: Bool
+    @State private var tornadoDrawProgress: CGFloat = 0
+    
+    /// Biometric unlock available: device supports + password saved
+    private var biometricAvailable: Bool {
+        if case .available = viewModel.biometricStatus { return true }
+        return false
+    }
+    
+    /// Get biometric type from status (only available when enabled)
+    private var biometricType: LABiometryType {
+        if case let .available(type) = viewModel.biometricStatus { return type }
+        return .none
+    }
+    
+    /// Apple HIG-compliant biometric icon
+    private var biometricIcon: String {
+        switch biometricType {
+        case .faceID: return "faceid"
+        case .touchID: return "touchid"
+        case .opticID: return "opticid"
+        default: return "person.badge.key"
+        }
+    }
+    
+    /// Apple HIG-compliant biometric label
+    private var biometricLabel: String {
+        switch biometricType {
+        case .faceID: return "Unlock with Face ID"
+        case .touchID: return "Unlock with Touch ID"
+        case .opticID: return "Unlock with Optic ID"
+        default: return "Unlock with Biometrics"
+        }
+    }
     
     var body: some View {
-        VStack(spacing: 20) {
-            Spacer()
+        ZStack {
+            // Subtle gray background (matching main view)
+            #if os(macOS)
+            Color(nsColor: .windowBackgroundColor)
+                .ignoresSafeArea()
+            #else
+            Color(uiColor: .systemBackground)
+                .ignoresSafeArea()
+            #endif
             
-            // App icon/branding - tornado from SF Symbols 7
-            Image(systemName: "tornado")
-                .font(.system(size: 64, weight: .medium))
-                .foregroundStyle(.tint)
-                .accessibilityHidden(true)
-            
-            Text("ExoCortex")
-                .font(.system(size: 28, weight: .semibold, design: .rounded))
-                .accessibilityAddTraits(.isHeader)
-            
-            Text("Encrypted Work Log")
-                .font(.subheadline)
-                .foregroundStyle(.secondary)
-            
-            // Password field
-            VStack(spacing: 12) {
-                SecureField("Password", text: $viewModel.password)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(maxWidth: 260)
-                    .textContentType(.password)
-                    .submitLabel(.go)
-                    .onSubmit { viewModel.unlockWithPassword() }
+            // Content
+            VStack(spacing: 0) {
+                Spacer()
                 
-                if let error = viewModel.unlockError {
-                    Text(error)
-                        .font(.caption)
-                        .foregroundStyle(.red)
+                // Animated tornado logo with "Draw On" effect
+                ZStack {
+                    Circle()
+                        .fill(
+                            RadialGradient(
+                                colors: [Color.cyan.opacity(0.12 * tornadoDrawProgress), Color.clear],
+                                center: .center,
+                                startRadius: 20,
+                                endRadius: 80
+                            )
+                        )
+                        .frame(width: 160, height: 160)
+                    
+                    Image(systemName: "tornado")
+                        .font(.system(size: 72, weight: .light))
+                        .foregroundStyle(
+                            LinearGradient(
+                                colors: [.cyan, .blue, .purple],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            )
+                        )
+                        .opacity(tornadoDrawProgress)
+                        .scaleEffect(0.8 + (0.2 * tornadoDrawProgress))
+                        .shadow(color: .cyan.opacity(0.3 * tornadoDrawProgress), radius: 20, y: 5)
                 }
-            }
-            
-            // Unlock buttons
-            HStack(spacing: 12) {
-                Button(action: { viewModel.unlockWithPassword() }) {
-                    if viewModel.isLoading {
-                        ProgressView()
-                            .controlSize(.small)
-                    } else {
-                        Text("Unlock")
-                            .frame(minWidth: 80)
+                .padding(.bottom, 24)
+                
+                // App name
+                Text("ExoCortex")
+                    .font(.system(size: 32, weight: .bold, design: .rounded))
+                    .foregroundStyle(.primary)
+                    .opacity(tornadoDrawProgress)
+                
+                Text("Encrypted Work Log")
+                    .font(.subheadline)
+                    .foregroundStyle(.secondary)
+                    .padding(.top, 4)
+                    .opacity(tornadoDrawProgress)
+                
+                Spacer()
+                
+                // Unlock card
+                VStack(spacing: 16) {
+                    // Password field - disabled autofill to prevent system password manager
+                    SecureField("Password", text: $viewModel.password)
+                        .textFieldStyle(.roundedBorder)
+                        .textContentType(.init(rawValue: ""))  // Disables password autofill suggestions
+                        .focused($passwordFocused)
+                        .disabled(viewModel.isLoading)
+                        .onSubmit { viewModel.unlockWithPassword() }
+                    
+                    // Unlock button
+                    Button {
+                        viewModel.unlockWithPassword()
+                    } label: {
+                        HStack(spacing: 8) {
+                            if viewModel.isLoading {
+                                ProgressView()
+                                    .controlSize(.small)
+                            } else {
+                                Image(systemName: "lock.open.fill")
+                            }
+                            Text("Unlock")
+                                .fontWeight(.semibold)
+                        }
+                        .frame(maxWidth: .infinity)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+                    .disabled(viewModel.password.isEmpty || viewModel.isLoading)
+                    
+                    // Biometric unlock button (only shown if available)
+                    if biometricAvailable {
+                        Button {
+                            viewModel.unlockWithBiometrics()
+                        } label: {
+                            HStack(spacing: 8) {
+                                Image(systemName: biometricIcon)
+                                Text(biometricLabel)
+                            }
+                            .frame(maxWidth: .infinity)
+                        }
+                        .buttonStyle(.bordered)
+                        .controlSize(.large)
+                        .disabled(viewModel.isLoading)
+                    }
+                    
+                    // Error message
+                    if let error = viewModel.unlockError {
+                        Text(error)
+                            .font(.caption)
+                            .foregroundStyle(.red)
+                            .multilineTextAlignment(.center)
                     }
                 }
-                .buttonStyle(.borderedProminent)
-                .disabled(viewModel.password.isEmpty || viewModel.isLoading)
-                .accessibilityLabel("Unlock with password")
-                .accessibilityHint("Decrypts and opens your work log")
+                .padding(24)
+                .frame(maxWidth: 360)
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 16))
+                .opacity(tornadoDrawProgress)
                 
-                Button {
-                    viewModel.unlockWithBiometrics()
-                } label: {
-                    Image(systemName: "faceid")
-                }
-                .buttonStyle(.bordered)
-                .accessibilityLabel("Unlock with Face ID")
-                .accessibilityHint("Use biometric authentication to unlock")
+                Spacer()
             }
-            
-            Spacer()
-            Spacer()
+            .padding(.horizontal, 32)
         }
-        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .preferredColorScheme(.dark)
+        .onAppear {
+            passwordFocused = true
+            viewModel.refreshBiometricStatus()
+            startDrawOnAnimation()
+        }
         #if os(macOS)
-        .background(Color(nsColor: .windowBackgroundColor))
-        #else
-        .background(Color(uiColor: .systemBackground))
+        .frame(minWidth: 500, minHeight: 600)
         #endif
+    }
+    
+    /// Draw-on animation: single ease-out animation on app start
+    private func startDrawOnAnimation() {
+        withAnimation(.easeOut(duration: 1.0)) {
+            tornadoDrawProgress = 1.0
+        }
     }
 }
 
@@ -153,50 +252,39 @@ enum SidebarSelection: Hashable {
 
 // MARK: - Sidebar View
 
-/// Simple Apple HIG-style sidebar with flat list of views.
+/// Standard sidebar with section headers for Views and Settings.
 struct SidebarView: View {
     var viewsManager: ViewsManager
     @Environment(LogViewModel.self) private var viewModel
     @Binding var selection: SidebarSelection?
     
-    @State private var searchText = ""
-    
     var body: some View {
         List(selection: $selection) {
-            // Search/Filter field at the top
+            Section("Views") {
+                ForEach(viewsManager.views) { view in
+                    sidebarRow(for: .view(view), label: view.name, icon: view.icon)
+                }
+            }
+            
             Section {
-                HStack {
-                    Image(systemName: "magnifyingglass")
-                        .foregroundStyle(.secondary)
-                    TextField("Filter log...", text: $searchText)
-                        .textFieldStyle(.plain)
-                        .onSubmit {
-                            if !searchText.isEmpty {
-                                let newView = NamedView(name: "Search: \(searchText)", filter: searchText, icon: "magnifyingglass")
-                                viewsManager.addView(newView)
-                                selection = .view(newView)
-                                searchText = ""
-                            }
-                        }
-                }
-            }
-            
-            // All views in a simple flat list
-            ForEach(viewsManager.views) { view in
-                NavigationLink(value: SidebarSelection.view(view)) {
-                    Label(view.name, systemImage: view.icon)
-                }
-            }
-            
-            // Settings at the bottom as a regular list item
-            NavigationLink(value: SidebarSelection.settings) {
-                Label("Settings", systemImage: "gear")
+                sidebarRow(for: .settings, label: "Settings", icon: "gear")
             }
         }
         .listStyle(.sidebar)
-        .navigationTitle("ExoCortex")
+    }
+    
+    /// Creates a sidebar row that works with List selection
+    @ViewBuilder
+    private func sidebarRow(for value: SidebarSelection, label: String, icon: String) -> some View {
         #if os(macOS)
-        .navigationSplitViewColumnWidth(min: 180, ideal: 220, max: 300)
+        // macOS: Simple selectable row (selection handled by List)
+        Label(label, systemImage: icon)
+            .tag(value)
+        #else
+        // iOS: Use NavigationLink for navigation
+        NavigationLink(value: value) {
+            Label(label, systemImage: icon)
+        }
         #endif
     }
 }
@@ -210,68 +298,55 @@ struct LogEditorView: View {
     var viewsManager: ViewsManager
     
     var body: some View {
-        VStack(spacing: 0) {
-            // Status bar
-            statusBar
-                .padding(.horizontal)
-                .padding(.vertical, 8)
-            
-            Divider()
-            
-            ScrollViewReader {
-                proxy in
-                SimpleTextEditor(
-                    text: editorText,
-                    onFocusLost: {
-                        Task { await viewModel.forceSave() }
-                    }
-                )
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
-                .onChange(of: viewModel.fullText.count) { _ in
-                    // Scroll to bottom when text is appended (e.g., AI response)
-                    // This is a common heuristic for TextEditor jumping issues.
-                    DispatchQueue.main.async {
-                        proxy.scrollTo("bottom", anchor: .bottom)
-                    }
-                }
-                .onAppear {
-                    // Initial scroll to bottom when view appears
-                    DispatchQueue.main.async {
-                        proxy.scrollTo("bottom", anchor: .bottom)
-                    }
-                }
-                .id("bottom") // Add an ID to the TextEditor for scrolling
+        TextKit2Editor(
+            text: editorText,
+            onFocusLost: {
+                Task { await viewModel.forceSave() }
+            }
+        )
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .onAppear {
+            // Scroll to bottom and position cursor at end on view appearance
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                scrollToBottomAndFocus()
             }
         }
-        .navigationTitle(viewsManager.selectedView.name)
-        #if os(macOS)
-        .navigationSubtitle(viewsManager.selectedView.filter.isEmpty ? "" : viewsManager.selectedView.filter)
-        .toolbar {
-            ToolbarItemGroup(placement: .primaryAction) {
-                // Undo AI Edit button
-                Button {
-                    viewModel.undoLLM()
-                } label: {
-                    Image(systemName: "arrow.uturn.backward")
-                }
-                .help("Undo last AI edit (⌘Z)")
-                .keyboardShortcut("z", modifiers: .command)
-                .disabled(!viewModel.canUndoLLM)
-                
-                // Date separator button
-                Button {
-                    viewModel.insertDateLine()
-                } label: {
-                    Image(systemName: "calendar.badge.plus")
-                }
-                .help("Insert date separator (--- YYYY-MM-DD ---)")
-                .keyboardShortcut("d", modifiers: [.command, .shift])
-            }
-        }
-        #endif
         .onChange(of: viewsManager.selectedView) { _, newView in
             viewModel.filterText = newView.filter
         }
+    }
+    
+    /// Scroll to bottom and position cursor for immediate typing
+    private func scrollToBottomAndFocus() {
+        #if os(macOS)
+        // Get the key window and find the NSTextView
+        if let window = NSApplication.shared.keyWindow,
+           let textView = findTextView(in: window.contentView) {
+            // Position cursor at end
+            textView.setSelectedRange(NSRange(location: textView.string.count, length: 0))
+            // Scroll to end
+            textView.scrollToEndOfDocument(self)
+            // Focus
+            window.makeFirstResponder(textView)
+        }
+        #elseif os(iOS)
+        // For iOS, UITextView handles this natively
+        // The cursor will be positioned at the end via binding
+        #endif
+    }
+    
+    /// Recursively find NSTextView in view hierarchy
+    private func findTextView(in view: NSView?) -> NSTextView? {
+        guard let view = view else { return nil }
+        if let textView = view as? NSTextView {
+            return textView
+        }
+        for subview in view.subviews {
+            if let found = findTextView(in: subview) {
+                return found
+            }
+        }
+        return nil
     }
     
     /// Text binding - shows full text for "All", filtered for others
@@ -284,50 +359,6 @@ struct LogEditorView: View {
         }
     }
     
-    // MARK: - Status Bar
-    
-    private var statusBar: some View {
-        HStack(spacing: 8) {
-            statusIndicator
-            Spacer()
-            
-            if viewModel.isStreaming {
-                HStack(spacing: 6) {
-                    ProgressView()
-                        .controlSize(.small)
-                    Text("AI responding…")
-                        .font(.caption)
-                        .foregroundStyle(.purple)
-                }
-            }
-        }
-    }
-    
-    @ViewBuilder
-    private var statusIndicator: some View {
-        switch viewModel.saveStatus {
-        case .idle:
-            Label("Ready", systemImage: "circle")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .accessibilityLabel("Status: Ready")
-        case .saving:
-            Label("Saving…", systemImage: "arrow.triangle.2.circlepath")
-                .font(.caption)
-                .foregroundStyle(.orange)
-                .accessibilityLabel("Status: Saving changes")
-        case .saved:
-            Label("Saved", systemImage: "checkmark.circle.fill")
-                .font(.caption)
-                .foregroundStyle(.green)
-                .accessibilityLabel("Status: All changes saved")
-        case .error(let message):
-            Label(message, systemImage: "exclamationmark.triangle.fill")
-                .font(.caption)
-                .foregroundStyle(.red)
-                .accessibilityLabel("Error: \(message)")
-        }
-    }
 }
 
 // MARK: - Preview
