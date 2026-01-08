@@ -55,7 +55,6 @@ struct NamedView: Identifiable, Codable, Equatable, Hashable {
     static let examples: [NamedView] = [
         NamedView(name: "Open Todos", filter: "todo:open", icon: "checklist"),
         NamedView(name: "Completed", filter: "todo:done", icon: "checkmark.circle"),
-        NamedView(name: "AI Responses", filter: LLMConfig.responseTag, icon: "sparkles"),
         NamedView(name: "Work", filter: "#work", icon: "briefcase"),
         NamedView(name: "Personal", filter: "#personal", icon: "person"),
     ]

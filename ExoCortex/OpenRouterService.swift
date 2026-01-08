@@ -52,19 +52,11 @@ actor OpenRouterService {
     
     // MARK: - Fetch Methods
     
-    /// Fetch a complete chat response (read-only mode)
-    /// - Parameter userMessage: The user's prompt (with context already included)
+    /// Fetch a complete response from LLM using active system prompt
+    /// - Parameter userMessage: The user's instruction with context
     /// - Returns: Complete response text
     func fetch(userMessage: String) async throws -> String {
-        let response = try await performRequest(userMessage: userMessage, systemPrompt: LLMConfig.systemPrompt)
-        return response
-    }
-    
-    /// Fetch a complete chat response for edit mode (#do)
-    /// - Parameter userMessage: The edit instruction with context
-    /// - Returns: Complete response text
-    func fetchEdit(userMessage: String) async throws -> String {
-        let response = try await performRequest(userMessage: userMessage, systemPrompt: LLMConfig.editSystemPrompt)
+        let response = try await performRequest(userMessage: userMessage, systemPrompt: LLMConfig.activeSystemPrompt)
         return response
     }
     
@@ -88,7 +80,7 @@ actor OpenRouterService {
         request.setValue(LLMConfig.appName, forHTTPHeaderField: "X-Title")
         
         let body: [String: Any] = [
-            "model": LLMConfig.model,
+            "model": LLMConfig.activeModel,
             "stream": false,
             "max_tokens": LLMConfig.maxTokens,
             "messages": [

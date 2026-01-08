@@ -298,12 +298,29 @@ struct LogEditorView: View {
     var viewsManager: ViewsManager
     
     var body: some View {
-        TextKit2Editor(
-            text: editorText,
-            onFocusLost: {
-                Task { await viewModel.forceSave() }
+        ZStack {
+            TextKit2Editor(
+                text: editorText,
+                onFocusLost: {
+                    Task { await viewModel.forceSave() }
+                }
+            )
+            
+            VStack {
+                HStack {
+                    Spacer()
+                    Button(action: checkScopes) {
+                        Image(systemName: "checkmark.circle")
+                            .font(.system(size: 16))
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Check Scopes")
+                    .padding(8)
+                }
+                Spacer()
             }
-        )
+        }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .onAppear {
             // Scroll to bottom and position cursor at end on view appearance
@@ -314,6 +331,21 @@ struct LogEditorView: View {
         .onChange(of: viewsManager.selectedView) { _, newView in
             viewModel.filterText = newView.filter
         }
+        .sheet(isPresented: $viewModel.showValidationSheet) {
+            if let result = viewModel.validationResult {
+                ValidationSheet(
+                    isPresented: $viewModel.showValidationSheet,
+                    errors: result.errors,
+                    mode: .manual
+                )
+            }
+        }
+    }
+    
+    private func checkScopes() {
+        let validator = ScopeValidator()
+        viewModel.validationResult = validator.validateFull(viewModel.fullText)
+        viewModel.showValidationSheet = true
     }
     
     /// Scroll to bottom and position cursor for immediate typing

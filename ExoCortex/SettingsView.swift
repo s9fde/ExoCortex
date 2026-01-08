@@ -19,14 +19,29 @@ struct SettingsView: View {
     @State private var showingEditViewSheet = false
     @State private var editingView: NamedView?
 
+    @State private var modelInput: String = ""
+    @State private var systemPromptInput: String = ""
+    @State private var showResetAlert = false
+    @State private var resetAction: ResetAction = .model
+    
+    enum ResetAction {
+        case model
+        case prompt
+    }
+    
     var body: some View {
         Form {
             viewsSection
+            llmConfigSection
             securitySection
             aboutSection
         }
         .formStyle(.grouped)
         .navigationTitle("Settings")
+        .onAppear {
+            modelInput = LLMConfig.activeModel
+            systemPromptInput = LLMConfig.activeSystemPrompt
+        }
         .sheet(isPresented: $showingNewViewSheet) {
             ViewEditSheet(
                 viewsManager: viewsManager,
@@ -53,25 +68,18 @@ struct SettingsView: View {
             ForEach(viewsManager.views) { view in
                 if view.isBuiltIn {
                     // Built-in view (non-editable)
-                    HStack {
-                        Label(view.name, systemImage: view.icon)
-                        Spacer()
-                        Text("Built-in")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
+                    Label(view.name, systemImage: view.icon)
+                        .foregroundStyle(.secondary)
                 } else {
                     // User view (editable)
-                    HStack {
-                        Label(view.name, systemImage: view.icon)
-                        Spacer()
-                        Text(view.filter)
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                    .contentShape(Rectangle())
-                    .onTapGesture {
+                    Button {
                         editingView = view
+                    } label: {
+                        HStack {
+                            Label(view.name, systemImage: view.icon)
+                                .foregroundStyle(.primary)
+                            Spacer()
+                        }
                     }
                     .swipeActions(edge: .trailing, allowsFullSwipe: true) {
                         Button(role: .destructive) {
@@ -102,7 +110,61 @@ struct SettingsView: View {
         } header: {
             Text("Views")
         } footer: {
-            Text("Views filter your log content. Tap to edit, swipe to delete.")
+            Text("Tap a view to edit. Swipe left to delete, right to edit.")
+        }
+    }
+    
+    // MARK: - LLM Configuration Section
+    
+    private var llmConfigSection: some View {
+        Group {
+            Section {
+                TextField("Model ID", text: $modelInput)
+                    .font(.system(.body, design: .monospaced))
+                    #if os(iOS)
+                    .textInputAutocapitalization(.never)
+                    #endif
+                    .onChange(of: modelInput) { _, newValue in
+                        viewModel.saveLLMModel(newValue)
+                    }
+                
+                TextEditor(text: $systemPromptInput)
+                    .font(.system(.body, design: .monospaced))
+                    .frame(minHeight: 100)
+                    .onChange(of: systemPromptInput) { _, newValue in
+                        viewModel.saveSystemPrompt(newValue)
+                    }
+                
+                Menu {
+                    Button("Reset Model") {
+                        resetAction = .model
+                        showResetAlert = true
+                    }
+                    Button("Reset Prompt") {
+                        resetAction = .prompt
+                        showResetAlert = true
+                    }
+                } label: {
+                    Label("Reset", systemImage: "arrow.counterclockwise")
+                }
+                .alert("Reset to Default?", isPresented: $showResetAlert) {
+                    Button("Cancel", role: .cancel) { }
+                    Button("Reset", role: .destructive) {
+                        switch resetAction {
+                        case .model:
+                            modelInput = LLMConfig.defaultModel
+                            viewModel.saveLLMModel(LLMConfig.defaultModel)
+                        case .prompt:
+                            systemPromptInput = LLMConfig.defaultSystemPrompt
+                            viewModel.saveSystemPrompt(LLMConfig.defaultSystemPrompt)
+                        }
+                    }
+                }
+            } header: {
+                Text("LLM Configuration")
+            } footer: {
+                Text("Model ID and system prompt save automatically. Use the Reset menu to restore defaults.")
+            }
         }
     }
     
@@ -111,74 +173,46 @@ struct SettingsView: View {
     private var securitySection: some View {
         Group {
             Section {
-                // Show current biometric status
                 HStack {
                     Text("Biometric Unlock")
                     Spacer()
                     Text(biometricStatusText)
+                        .font(.caption)
                         .foregroundStyle(.secondary)
                 }
                 
                 Button {
                     viewModel.rememberPasswordInKeychain()
                 } label: {
-                    Label("Save Password with Biometrics", systemImage: biometricIcon)
+                    Label("Enable Biometric Unlock", systemImage: biometricIcon)
                 }
-                .accessibilityHint("Stores your password securely for Face ID or Touch ID unlock")
                 
                 Button(role: .destructive) {
                     viewModel.clearKeychainPassword()
                 } label: {
                     Label("Clear Saved Password", systemImage: "key.slash")
                 }
-                .accessibilityHint("Removes the stored password from the keychain")
-                
-                if let status = viewModel.keychainStatus {
-                    Text(status)
-                        .font(.caption)
-                        .foregroundStyle(statusColor(for: status))
-                        .textSelection(.enabled)
-                        .accessibilityLabel("Keychain status: \(status)")
-                }
             } header: {
-                Text("Security")
+                Text("Biometric Security")
             } footer: {
-                Text("Save your password to enable biometric unlock on the lock screen.")
+                Text("Save your password to keychain for biometric unlock.")
             }
             
-            Section("OpenRouter API Key") {
-                // API key field - disabled autofill to prevent system password manager
+            Section(header: Text("OpenRouter API"), footer: Text("API key saves automatically to keychain.")) {
                 SecureField("API Key", text: Binding(
                     get: { viewModel.apiKeyInput },
                     set: { viewModel.apiKeyInput = $0 }
                 ))
-                    .textContentType(.init(rawValue: ""))  // Disables autofill suggestions
+                    .textContentType(.init(rawValue: ""))
                     .disableAutocorrection(true)
-                
-                HStack {
-                    Button {
+                    .onChange(of: viewModel.apiKeyInput) { _, _ in
                         viewModel.saveAPIKeyToKeychain()
-                    } label: {
-                        Label("Save API Key", systemImage: "key")
                     }
-                    .accessibilityHint("Saves the OpenRouter API Key securely to your keychain")
-                    
-                    Spacer()
-                    
-                    Button(role: .destructive) {
-                        viewModel.clearAPIKeyFromKeychain()
-                    } label: {
-                        Label("Clear API Key", systemImage: "key.slash")
-                    }
-                    .accessibilityHint("Removes the OpenRouter API Key from your keychain")
-                }
                 
-                if let status = viewModel.apiKeyStatus {
-                    Text(status)
-                        .font(.caption)
-                        .foregroundStyle(statusColor(for: status))
-                        .textSelection(.enabled)
-                        .accessibilityLabel("API Key status: \(status)")
+                Button(role: .destructive) {
+                    viewModel.clearAPIKeyFromKeychain()
+                } label: {
+                    Label("Clear API Key", systemImage: "key.slash")
                 }
             }
         }
@@ -189,30 +223,14 @@ struct SettingsView: View {
     private var aboutSection: some View {
         Section("About") {
             HStack {
-                Text("Version")
-                Spacer()
-                Text("1.0")
-                    .foregroundStyle(.secondary)
-            }
-            
-            HStack {
-                Text("Encryption")
-                Spacer()
-                Text("ChaCha20-Poly1305")
-                    .foregroundStyle(.secondary)
-            }
-            
-            HStack {
                 Text("AI Model")
                 Spacer()
-                Text(LLMConfig.model.components(separatedBy: "/").last ?? LLMConfig.model)
+                Text(LLMConfig.activeModel.components(separatedBy: "/").last ?? LLMConfig.activeModel)
+                    .font(.caption)
                     .foregroundStyle(.secondary)
+                    .lineLimit(1)
             }
         }
-    }
-    
-    private func statusColor(for status: String) -> Color {
-        status.contains("saved") || status.contains("cleared") || status.contains("loaded") || status.contains("enabled") ? .green : .red
     }
     
     /// Human-readable biometric status for the settings display
@@ -245,7 +263,7 @@ struct SettingsView: View {
             default: return "person.badge.key"
             }
         default:
-            return "faceid" // Default icon for the save button
+            return "faceid"
         }
     }
 }
@@ -269,8 +287,7 @@ struct ViewEditSheet: View {
     private let icons = [
         "doc.text", "checklist", "checkmark.circle", "sparkles",
         "briefcase", "person", "house", "star", "flag",
-        "tag", "folder", "link", "globe", "clock",
-        "calendar", "bell", "bookmark", "heart", "bolt"
+        "tag", "folder", "link", "globe", "clock"
     ]
     
     var body: some View {
@@ -286,38 +303,27 @@ struct ViewEditSheet: View {
                 }
                 
                 Section("Icon") {
-                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 44))], spacing: 12) {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 44))], spacing: 8) {
                         ForEach(icons, id: \.self) { iconName in
                             Button {
                                 icon = iconName
                             } label: {
                                 Image(systemName: iconName)
                                     .font(.title2)
-                                    .frame(width: 44, height: 44)
-                                    .background(
-                                        icon == iconName ? Color.accentColor.opacity(0.2) : Color.secondary.opacity(0.1),
-                                        in: RoundedRectangle(cornerRadius: 8)
-                                    )
+                                    .foregroundStyle(icon == iconName ? Color.accentColor : .primary)
                             }
                             .buttonStyle(.plain)
-                            .foregroundStyle(icon == iconName ? Color.accentColor : .primary)
+                            .contentShape(Rectangle())
                         }
                     }
-                    .padding(.vertical, 8)
                 }
                 
-                Section {
-                    Text("Filter examples:")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text("• `todo:open` - Open todos")
-                        Text("• `todo:done` - Completed todos")
-                        Text("• `#work` - Lines with #work tag")
-                        Text("• `#opus45` - AI responses")
-                        Text("• `http` - Lines containing URLs")
-                        Text("• `#work && todo:open` - Work todos")
+                Section("Filter Reference") {
+                    VStack(alignment: .leading, spacing: 6) {
+                        filterExample("todo:open", "Open todos")
+                        filterExample("todo:done", "Completed todos")
+                        filterExample("#work", "Lines with #work tag")
+                        filterExample("http", "URLs")
                     }
                     .font(.caption)
                     .foregroundStyle(.secondary)
@@ -352,6 +358,17 @@ struct ViewEditSheet: View {
         #if os(macOS)
         .frame(minWidth: 400, minHeight: 500)
         #endif
+    }
+    
+    private func filterExample(_ filter: String, _ description: String) -> some View {
+        HStack(spacing: 8) {
+            Text(filter)
+                .font(.system(.caption2, design: .monospaced))
+                .foregroundStyle(.primary)
+            Spacer()
+            Text(description)
+                .font(.caption)
+        }
     }
     
     private func saveView() {

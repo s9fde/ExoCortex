@@ -61,6 +61,12 @@ actor KeychainService {
     /// Account identifier for the API key
     private let apiKeyAccount = "openRouterAPIKey"
     
+    /// Account identifier for the LLM model
+    private let llmModelAccount = "llmModel"
+    
+    /// Account identifier for the system prompt
+    private let systemPromptAccount = "systemPrompt"
+    
     /// UserDefaults key for tracking biometric password state
     private static let biometricEnabledKey = "com.exocortex.biometricPasswordEnabled"
     
@@ -293,6 +299,122 @@ actor KeychainService {
             throw KeychainServiceError.unexpectedStatus(status)
         }
     }
+    
+    // MARK: - LLM Model Operations
+    
+    /// Saves the selected LLM model to the keychain.
+    /// - Parameter model: The model identifier (e.g., "anthropic/claude-opus-4.5")
+    /// - Throws: `KeychainServiceError` if save fails
+   func saveLLMModel(_ model: String) async throws {
+       guard let data = model.data(using: .utf8) else {
+           throw KeychainServiceError.unexpectedStatus(errSecParam)
+       }
+       
+       // Remove existing entry
+       deleteKeychainItem(service: service, account: llmModelAccount)
+       
+       // Add new entry
+       let query: [String: Any] = [
+           kSecClass as String: kSecClassGenericPassword,
+           kSecAttrService as String: service,
+           kSecAttrAccount as String: llmModelAccount,
+           kSecValueData as String: data,
+           kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+       ]
+       
+       let status = SecItemAdd(query as CFDictionary, nil)
+       guard status == errSecSuccess else {
+           throw KeychainServiceError.unexpectedStatus(status)
+       }
+   }
+   
+   /// Loads the selected LLM model from the keychain.
+   /// - Returns: The stored model identifier, or `nil` if not found
+   /// - Throws: `KeychainServiceError` if load fails unexpectedly
+   func loadLLMModel() async throws -> String? {
+       let query: [String: Any] = [
+           kSecClass as String: kSecClassGenericPassword,
+           kSecAttrService as String: service,
+           kSecAttrAccount as String: llmModelAccount,
+           kSecReturnData as String: true
+       ]
+       
+       var item: CFTypeRef?
+       let status = SecItemCopyMatching(query as CFDictionary, &item)
+       
+       switch status {
+       case errSecSuccess:
+           guard let data = item as? Data,
+                 let model = String(data: data, encoding: .utf8) else {
+               throw KeychainServiceError.unexpectedStatus(errSecDecode)
+           }
+           return model
+           
+       case errSecItemNotFound:
+           return nil
+           
+       default:
+           throw KeychainServiceError.unexpectedStatus(status)
+       }
+   }
+   
+   // MARK: - System Prompt Operations
+   
+   /// Saves the system prompt to the keychain.
+   /// - Parameter prompt: The system prompt text
+   /// - Throws: `KeychainServiceError` if save fails
+   func saveSystemPrompt(_ prompt: String) async throws {
+       guard let data = prompt.data(using: .utf8) else {
+           throw KeychainServiceError.unexpectedStatus(errSecParam)
+       }
+       
+       // Remove existing entry
+       deleteKeychainItem(service: service, account: systemPromptAccount)
+       
+       // Add new entry
+       let query: [String: Any] = [
+           kSecClass as String: kSecClassGenericPassword,
+           kSecAttrService as String: service,
+           kSecAttrAccount as String: systemPromptAccount,
+           kSecValueData as String: data,
+           kSecAttrAccessible as String: kSecAttrAccessibleWhenUnlockedThisDeviceOnly
+       ]
+       
+       let status = SecItemAdd(query as CFDictionary, nil)
+       guard status == errSecSuccess else {
+           throw KeychainServiceError.unexpectedStatus(status)
+       }
+   }
+   
+   /// Loads the system prompt from the keychain.
+   /// - Returns: The stored system prompt, or `nil` if not found
+   /// - Throws: `KeychainServiceError` if load fails unexpectedly
+   func loadSystemPrompt() async throws -> String? {
+       let query: [String: Any] = [
+           kSecClass as String: kSecClassGenericPassword,
+           kSecAttrService as String: service,
+           kSecAttrAccount as String: systemPromptAccount,
+           kSecReturnData as String: true
+       ]
+       
+       var item: CFTypeRef?
+       let status = SecItemCopyMatching(query as CFDictionary, &item)
+       
+       switch status {
+       case errSecSuccess:
+           guard let data = item as? Data,
+                 let prompt = String(data: data, encoding: .utf8) else {
+               throw KeychainServiceError.unexpectedStatus(errSecDecode)
+           }
+           return prompt
+           
+       case errSecItemNotFound:
+           return nil
+           
+       default:
+           throw KeychainServiceError.unexpectedStatus(status)
+       }
+   }
     
     // MARK: - Private Helpers
     

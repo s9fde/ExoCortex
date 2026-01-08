@@ -2,8 +2,8 @@
 //  LLMConfig.swift
 //  ExoCortex
 //
-//  Configuration constants for LLM integration via OpenRouter.
-//  Edit these values before compiling to customize behavior.
+//  Configuration for LLM integration via OpenRouter.
+//  Models and system prompts can be customized in Settings.
 //
 
 import Foundation
@@ -11,61 +11,50 @@ import Foundation
 // MARK: - LLM Configuration
 
 /// Configuration for LLM integration via OpenRouter.
-/// Edit these values before compiling to customize behavior.
+/// API key, model, and system prompt can be configured at runtime via Settings.
 enum LLMConfig {
     
-    // MARK: - API Configuration
+    // MARK: - Default Values
+    
+    static let defaultModel = "anthropic/claude-opus-4.5"
+    
+    static let defaultSystemPrompt = """
+        You are an intelligent editor and analyzer for a personal encrypted work log.
+        
+        The user has provided you with:
+        1. Content from their work log, optionally scoped to specific dates or topics
+        2. An instruction to analyze, transform, or edit this content
+        
+        Your responses should be:
+        - Direct: Minimal preamble, get to the point
+        - Scoped: Address only the given content
+        - Focused: Make changes only as requested
+        - Structured: Use formatting (bullets, headers) for clarity
+        
+        When asked to transform or edit content, apply the changes and return the result.
+        When asked to analyze or extract information, provide your findings clearly.
+        
+        The user is tracking this in a personal system, so accuracy and clarity matter.
+        """
+    
+    // MARK: - Runtime Configuration (Loaded from Keychain)
     
     /// Your OpenRouter API key - loaded from Keychain at runtime
     /// Set via Settings view → OpenRouter API Key
-    /// Uses keychain for secure storage without environment variables
     nonisolated(unsafe) static var apiKey = "YOUR_API_KEY_HERE"
     
-    /// The model to use for AI responses
-    /// Options: "anthropic/claude-opus-4.5", "anthropic/claude-sonnet-4", etc.
-    static let model = "anthropic/claude-opus-4.5"
+    /// Currently selected model (can be changed in Settings)
+    /// Default: claude-opus-4.5
+    nonisolated(unsafe) static var activeModel = defaultModel
+    
+    /// Currently active system prompt (can be customized in Settings)
+    /// Default: defaultSystemPrompt
+    nonisolated(unsafe) static var activeSystemPrompt = defaultSystemPrompt
+    
+    // MARK: - Fixed Configuration
     
     /// Maximum tokens for response (affects cost and response length)
     static let maxTokens = 12000
-    
-    // MARK: - Prompt Tags
-    
-    /// Tag that triggers a read-only prompt (appends response below)
-    /// Legacy tag, equivalent to readOnlyTag
-    static let promptTag = "#p"
-    
-    /// Tag for read-only prompts (appends response below)
-    static let readOnlyTag = "#ro"
-    
-    /// Tag for edit prompts (replaces scoped section with LLM output)
-    static let editTag = "#do"
-    
-    /// Tag prepended to AI responses for visual identification
-    static let responseTag = "#opus45"
-    
-    /// Tag prepended to error messages
-    static let errorTag = "#error"
-    
-    // MARK: - System Prompt
-    
-    /// System prompt sent with every request to set AI behavior
-    static let systemPrompt = """
-        You are a helpful assistant integrated into a personal encrypted work log called ExoCortex.
-        Respond concisely in markdown format. Use bullet points and headers for structure.
-        Keep responses focused and actionable. The user's context may include their notes, todos, and logs.
-        When analyzing todos, prioritize by urgency and importance.
-        Format code snippets with proper markdown code blocks.
-        """
-    
-    /// System prompt for edit mode (#do) - instructs LLM to return only modified text
-    static let editSystemPrompt = """
-        You are editing a section of a personal work log.
-        Return ONLY the modified text with the requested changes applied.
-        Do not add explanations, commentary, or markdown code block wrappers.
-        Do not add phrases like "Here is the modified text:" or similar.
-        Preserve the original structure and formatting unless specifically asked to change it.
-        Output only the transformed content, nothing else.
-        """
     
     // MARK: - OpenRouter Settings
     
