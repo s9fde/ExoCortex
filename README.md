@@ -47,7 +47,7 @@ Open `ExoCortex.xcodeproj` in Xcode and run (⌘R).
 
 ### Encryption
 
-On first launch, you'll be prompted to create a password. This password encrypts your work log using AES-256-GCM encryption.
+On first launch, you'll be prompted to create a password. This password encrypts your work log using ChaCha20-Poly1305 encryption with PBKDF2 key derivation (150,000 iterations).
 
 ### Writing Entries
 
@@ -233,7 +233,7 @@ Use `@tag` notation in prompts to query scopes:
 - **Manual check**: "Check Scopes" menu item validates full document
 - Clear error messages with suggestions for fixes
 
-See [`ARCHITECTURE.md`](ARCHITECTURE.md) and [`plans/SCOPE_SYSTEM_COMPLETION_SUMMARY.md`](plans/SCOPE_SYSTEM_COMPLETION_SUMMARY.md) for detailed documentation.
+See [`ARCHITECTURE.md`](ARCHITECTURE.md) for detailed documentation.
 
 ## Architecture
 
@@ -249,6 +249,7 @@ ExoCortex/
 ├── LLMConfig.swift         # AI configuration
 ├── NamedView.swift         # Sidebar view model
 ├── TagQueryParser.swift    # Filter query parsing
+├── LLMQuery.swift          # LLM query detection and prompt parsing
 ├── TextKit2View.swift      # Modern text editor UI
 ├── SettingsView.swift      # App settings UI
 └── Scoping/                # Hierarchical scope system
@@ -276,6 +277,20 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 ## License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+## Development Status
+
+**Phase: Production Ready** ✅
+
+Core implementation is complete:
+- ✅ Encryption and security layer (ChaCha20-Poly1305, Keychain integration)
+- ✅ Hierarchical scope system with full parser and validation
+- ✅ LLM query system with scope context extraction
+- ✅ Multi-platform UI (iOS & macOS)
+- ✅ iCloud synchronization for saved views
+- ✅ Comprehensive error handling and validation
+
+See [`ARCHITECTURE.md`](ARCHITECTURE.md) for implementation details.
 
 ## Acknowledgments
 
