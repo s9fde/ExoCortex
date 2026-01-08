@@ -88,7 +88,8 @@ final class ViewsManager {
     
     private let storageKey = "namedViews"
     private let iCloudStore = NSUbiquitousKeyValueStore.default
-    // Note: nonisolated is required for deinit access
+    // Note: nonisolated(unsafe) is needed for cleanup in deinit
+    // This is safe because deinit is not reentrant and no other code accesses it
     private nonisolated(unsafe) var notificationObserver: (any NSObjectProtocol)?
     
     // MARK: - Initialization

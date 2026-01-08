@@ -92,6 +92,7 @@ class TextKit2Coordinator: NSObject, NSTextViewDelegate {
     }
     
     /// Scroll to bottom of text and position cursor at end
+    @MainActor
     func scrollToBottomAndFocus() {
         guard let textView = textView else { return }
         
