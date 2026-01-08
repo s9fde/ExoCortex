@@ -118,7 +118,7 @@ class ScopeContextResolver {
     
     /// Get scope path for cursor position (for breadcrumb display)
     func getScopePath(at position: Int = 0, in logText: String) -> [String] {
-        let parseResult = parser.parse(logText)
+        _ = parser.parse(logText)
         
         // Find block at or near this position
         // For now, return empty - would require character position tracking

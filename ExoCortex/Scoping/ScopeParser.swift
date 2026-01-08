@@ -158,10 +158,10 @@ struct ScopeParser {
                 let tagName = token.tagName
                 
                 switch token.kind {
-                case .blockOpen(let originalName):
+                case .blockOpen(_):
                     if tagName.isDateTag() {
                         // Date tag - always a root
-                        if let prevDate = currentDate {
+                        if currentDate != nil {
                             // Previous date not closed, auto-close (could be error or warning)
                         }
                         currentDate = tagName
@@ -181,7 +181,7 @@ struct ScopeParser {
                         }
                     }
                     
-                case .blockClose(let originalName):
+                case .blockClose(_):
                     if let last = blockStack.last, last.tag == tagName {
                         blockStack.removeLast()
                         
