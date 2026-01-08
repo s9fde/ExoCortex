@@ -12,12 +12,12 @@ import Foundation
 ///
 /// Uses simple AND logic:
 /// - `@work` - all blocks with "work" tag
-/// - `@2026-01-08` - all blocks from this date
+/// - `@260108` - all blocks from this date
 /// - `@work @urgent` - all blocks with BOTH "work" AND "urgent" tags
 ///
 /// Example:
 /// ```
-/// let query = ScopeQuery(from: "Summarize @2026-01-08 @work")
+/// let query = ScopeQuery(from: "Summarize @260108 @work")
 /// let matching = blocks.filter { query.matches($0) }
 /// ```
 struct ScopeQuery {

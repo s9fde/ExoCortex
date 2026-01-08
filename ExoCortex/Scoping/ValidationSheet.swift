@@ -197,7 +197,7 @@ struct HelpText: View {
     var suggestion: String {
         switch error {
         case .tagCrossDate:
-            return "All non-date tags must be nested within a date block (<<YYYY-MM-DD...>>YYYY-MM-DD)."
+            return "All non-date tags must be nested within a date block (<<YYMMDD...>>YYMMDD)."
         case .unopenedClose:
             return "This close tag (>>) has no matching opening tag (<<). Remove it or add the opening tag."
         case .mismatchedClose:

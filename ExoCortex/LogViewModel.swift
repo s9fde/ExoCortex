@@ -388,10 +388,10 @@ final class LogViewModel {
     }
     
     /// Insert a date separator line at the end of the log
-    /// Format: --- YYYY-MM-DD --- for LLM temporal context
+    /// Format: --- YYMMDD --- for LLM temporal context
     func insertDateLine() {
         let formatter = DateFormatter()
-        formatter.dateFormat = "yyyy-MM-dd"
+        formatter.dateFormat = "yyMMdd"
         let dateString = formatter.string(from: Date())
         let dateLine = "\n--- \(dateString) ---\n"
         fullText += dateLine
@@ -616,7 +616,7 @@ final class LogViewModel {
         let cleanPrompt = extractCleanPrompt(from: query.promptText, scopes: scopes)
         
         guard !scopes.isEmpty else {
-            fullText += "\n[LLM Error] Query requires at least one @scope reference like @2026-01-08\n"
+            fullText += "\n[LLM Error] Query requires at least one @scope reference like @260108\n"
             isFetching = false
             return
         }

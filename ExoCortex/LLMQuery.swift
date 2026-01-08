@@ -31,7 +31,7 @@ struct ResolvedLLMQuery {
     /// The original query
     let query: LLMQuery
     
-    /// Extracted scope references (["2026-01-08", "work"])
+    /// Extracted scope references (["260108", "work"])
     let scopeReferences: [String]
     
     /// Combined content from all matched scopes

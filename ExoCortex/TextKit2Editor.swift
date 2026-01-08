@@ -26,7 +26,7 @@ struct TextKit2Editor: View {
 
 #Preview {
     TextKit2Editor(text: .constant("""
-# 2026-01-01 Daily Log
+# 260101 Daily Log
 
 #p What should I focus on today?
 #opus45 Here are my suggestions:

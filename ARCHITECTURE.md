@@ -88,9 +88,9 @@ ExoCortex/
 
 **Core Syntax**
 ```
-<<tag          Block open (e.g., <<2026-01-08)
+<<tag          Block open (e.g., <<260108)
   Content
->>tag          Block close (e.g., >>2026-01-08)
+>>tag          Block close (e.g., >>260108)
 
 !!tag          Inline tag (e.g., !!urgent)
 ```

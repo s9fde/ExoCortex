@@ -32,7 +32,7 @@ enum ValidationScope {
         let calendar = Calendar.current
         let cutoffDate = calendar.date(byAdding: .day, value: -days, to: Date()) ?? Date()
         let dateFormatter = DateFormatter()
-        dateFormatter.dateFormat = "yyyy-MM-dd"
+        dateFormatter.dateFormat = "yyMMdd"
         let cutoffString = dateFormatter.string(from: cutoffDate)
         
         let lines = text.components(separatedBy: "\n")
@@ -40,7 +40,7 @@ enum ValidationScope {
         // Find first line with a date tag >= cutoff
         if let startIdx = lines.firstIndex(where: { line in
             // Check if line contains a date tag
-            if let range = line.range(of: #"<<(\d{4}-\d{2}-\d{2})"#, options: .regularExpression) {
+            if let range = line.range(of: #"<<(\d{6})"#, options: .regularExpression) {
                 let dateStr = String(line[range])
                     .replacingOccurrences(of: "<<", with: "")
                     .replacingOccurrences(of: ">>", with: "")

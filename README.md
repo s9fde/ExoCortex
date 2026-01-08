@@ -83,7 +83,7 @@ Ask the AI questions - responses are appended below:
 ```markdown
 ?? What were my main accomplishments @today?
 
-?? How many open todos do I have @2026-01-08?
+?? How many open todos do I have @260108?
 
 ?? Summarize the key decisions @week
 ```
@@ -98,7 +98,7 @@ For complex prompts, use block syntax:
   - Action items
   - Blockers
   
-  Context: @2026-01-08 @work
+  Context: @260108 @work
 >><?
 
 <<?
@@ -124,14 +124,14 @@ Use `@scope` notation to specify which content to include:
 
 | Reference | Description | Example |
 |-----------|-------------|---------|
-| `@2026-01-08` | Specific date entries | `?? analyze @2026-01-08` |
+| `@260108` | Specific date entries | `?? analyze @260108` |
 | `@today` | Today's entries only | `?? summarize @today` |
 | `@week` | Last 7 days | `?? weekly review @week` |
 | `@last:N` | Last N lines | `?? recap @last:50` |
 
 **Combine scopes** with AND logic:
 ```markdown
-?? What work did I do? @2026-01-08 @work
+?? What work did I do? @260108 @work
 
 <<?
   Link related items
@@ -143,7 +143,7 @@ Use `@scope` notation to specify which content to include:
 
 **Analysis (LLM appends):**
 ```markdown
-?? Count open todos @2026-01-08
+?? Count open todos @260108
 
 ?? What themes do you see @week?
 
@@ -152,7 +152,7 @@ Use `@scope` notation to specify which content to include:
   - Productivity patterns
   - Time distribution
   - Areas for improvement
-  @2026-01-01 @work
+  @260101 @work
 >><?
 ```
 
@@ -195,7 +195,7 @@ Changes save automatically and take effect on your next query.
 ExoCortex uses a modern **hierarchical scope system** with explicit open/close markers for precise LLM context extraction:
 
 ```markdown
-<<2026-01-08               Block-open (date root)
+<<260108                   Block-open (date root)
   Morning work session
   
   <<meeting                Nested block
@@ -204,7 +204,7 @@ ExoCortex uses a modern **hierarchical scope system** with explicit open/close m
   >>meeting                Block-close
   
   Evening notes !!personal
->>2026-01-08               Block-close
+>>260108                   Block-close
 ```
 
 ### Tag Syntax
@@ -219,7 +219,7 @@ ExoCortex uses a modern **hierarchical scope system** with explicit open/close m
 Use `@tag` notation in prompts to query scopes:
 
 ```markdown
-#p @2026-01-08 @work summarize my work today
+#p @260108 @work summarize my work today
 #p @meeting !!urgent what's the priority item?
 ```
 

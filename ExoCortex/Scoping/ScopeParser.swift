@@ -16,7 +16,7 @@ import Foundation
 /// - `!!tagname` - line-only tag (no closing needed)
 ///
 /// Architecture: Date-root tree
-/// - Dates (YYYY-MM-DD format) are always tree roots
+/// - Dates (YYMMDD compressed format) are always tree roots
 /// - All other tags must nest within a date
 /// - Tags cannot cross date boundaries
 struct ScopeParser {
@@ -265,9 +265,9 @@ struct ScopeParser {
 // MARK: - Extensions
 
 extension String {
-    /// Check if this string is a valid date tag (YYYY-MM-DD format)
+    /// Check if this string is a valid date tag (YYMMDD compressed format)
     func isDateTag() -> Bool {
-        let pattern = "^\\d{4}-\\d{2}-\\d{2}$"
+        let pattern = "^\\d{6}$"
         return range(of: pattern, options: .regularExpression) != nil
     }
 }

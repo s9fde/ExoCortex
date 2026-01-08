@@ -14,27 +14,27 @@ import Foundation
 ///
 /// Example:
 /// ```
-/// <<2026-01-08
+/// <<260108
 ///   <<meeting
 ///     - [ ] Task !!urgent
 /// >>meeting
-/// >>2026-01-08
+/// >>260108
 /// ```
 ///
 /// Results in a block with:
-/// - dateTag: "2026-01-08"
-/// - scopePath: ["2026-01-08", "meeting", "urgent"]
+/// - dateTag: "260108"
+/// - scopePath: ["260108", "meeting", "urgent"]
 /// - lineScopes: ["urgent"]
 /// - content: "- [ ] Task"
 struct ScopeBlock: Identifiable {
     let id: UUID = UUID()
     
     /// The root date tag, if this block is within a date scope
-    /// Example: "2026-01-08" from <<2026-01-08
+    /// Example: "260108" from <<260108
     let dateTag: String?
     
     /// Full hierarchical scope path from root to leaf
-    /// Example: ["2026-01-08", "meeting", "urgent"]
+    /// Example: ["260108", "meeting", "urgent"]
     let scopePath: [String]
     
     /// Line-only tags that apply to this specific line
