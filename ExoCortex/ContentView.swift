@@ -361,12 +361,13 @@ struct LogEditorView: View {
             // Focus
             window.makeFirstResponder(textView)
         }
-        #elseif os(iOS)
+        #else
         // For iOS, UITextView handles this natively
         // The cursor will be positioned at the end via binding
         #endif
     }
     
+    #if os(macOS)
     /// Recursively find NSTextView in view hierarchy
     private func findTextView(in view: NSView?) -> NSTextView? {
         guard let view = view else { return nil }
@@ -380,6 +381,7 @@ struct LogEditorView: View {
         }
         return nil
     }
+    #endif
     
     /// Text binding - shows full text for "All", filtered for others
     /// Both are now editable - changes in filtered view sync back to fullText
