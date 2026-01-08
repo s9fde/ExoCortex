@@ -73,60 +73,167 @@ Use hashtags to organize entries:
 
 Filter by clicking a tag or typing it in a filter view.
 
-### AI Prompts
+### AI Queries with `?`
 
-ExoCortex supports two modes of AI interaction:
+ExoCortex uses a unified `?` query system integrated with the scope grammar. The LLM decides whether to append findings or modify content based on your instruction.
 
-#### Read-Only Mode (`#p` or `#ro`)
-Ask the AI questions - responses are appended below your prompt:
+#### Single-Line Queries (`??`)
+
+Ask the AI questions - responses are appended below:
 ```markdown
-#p @today What did I accomplish?
-#ro @week Give me a weekly summary
+?? What were my main accomplishments @today?
+
+?? How many open todos do I have @2026-01-08?
+
+?? Summarize the key decisions @week
 ```
 
-#### Edit Mode (`#do`)
-Let the AI directly modify sections of your log:
+#### Multi-Line Queries (`<? >?`)
+
+For complex prompts, use block syntax:
 ```markdown
-#do @today Mark all completed todos as done
-#do @week Summarize each day into 3 bullet points
-#do @last:20 Fix any typos
+<<?
+  Analyze the following and provide:
+  - Key themes
+  - Action items
+  - Blockers
+  
+  Context: @2026-01-08 @work
+>><?
+
+<<?
+  Reorganize my todos by priority
+  Format: critical → high → medium → low
+  
+  @today
+>><?
 ```
 
-**Important:** Edit mode requires a contiguous scope (`@today`, `@week`, `@last:N`, `@log`). Non-contiguous scopes like `@tag:xyz` or `@todos` don't support edit mode.
+#### How It Works
 
-**Undo AI edits:** Press `⌘Z` or click the undo button to revert the last AI edit (up to 3 levels).
+1. Type your query with `??` (single-line) or `<? >?` (multi-line)
+2. Include one or more `@scope` references (e.g., `@2026-01-08`, `@today`, `@work`)
+3. Press Enter
+4. LLM receives your scope's context + instruction
+5. **LLM decides**: Append analysis or modify content based on your wording
+6. Response appears below your query
 
-#### Context References
+#### Scope References
 
-Use `@-references` to scope which parts of your log are sent with the prompt. This helps reduce costs and keeps context relevant.
+Use `@scope` notation to specify which content to include:
 
 | Reference | Description | Example |
 |-----------|-------------|---------|
-| `@log` | Entire log (truncated if too large) | `#p @log summarize my work` |
-| `@today` | Today's entries only | `#p @today what did I accomplish?` |
-| `@week` | Last 7 days of entries | `#p @week weekly summary` |
-| `@last:N` | Last N lines | `#p @last:50 recent context` |
-| `@tag:xyz` | Lines containing `#xyz` | `#p @tag:work summarize work tasks` |
-| `@todos` | All open todo items `[ ]` | `#p @todos prioritize my tasks` |
+| `@2026-01-08` | Specific date entries | `?? analyze @2026-01-08` |
+| `@today` | Today's entries only | `?? summarize @today` |
+| `@week` | Last 7 days | `?? weekly review @week` |
+| `@last:N` | Last N lines | `?? recap @last:50` |
 
-**Combine references** for precise scoping:
+**Combine scopes** with AND logic:
 ```markdown
-#p @todos @week What should I focus on this week?
-#p @tag:project-alpha @todos list remaining tasks
-#p @today @tag:meeting summarize today's meetings
+?? What work did I do? @2026-01-08 @work
+
+<<?
+  Link related items
+  @project-alpha @todo
+>><?
 ```
 
-**Without references**, only your prompt text is sent (no log context):
+#### Examples & Patterns
+
+**Analysis (LLM appends):**
 ```markdown
-#p explain how async/await works in Swift
+?? Count open todos @2026-01-08
+
+?? What themes do you see @week?
+
+<<?
+  Analyze these entries for:
+  - Productivity patterns
+  - Time distribution
+  - Areas for improvement
+  @2026-01-01 @work
+>><?
 ```
 
-#### Cost & Privacy Tips
+**Editing (LLM modifies):**
+```markdown
+<<?
+  Reformat these as bullet points
+  @today
+>><?
 
-- **Use specific scopes**: `@today` or `@tag:xyz` instead of `@log` to minimize tokens
-- **Combine filters**: `@todos @tag:work` sends only work-related todos
-- **Line limits**: `@last:100` for quick context without full history
-- **No context needed?** Omit all `@-references` for general questions
+<<?
+  Fix formatting and add timestamps
+  @last:100
+>><?
+```
+
+#### Configuration
+
+Customize LLM behavior in Settings:
+
+- **Model**: Enter OpenRouter model ID (e.g., `anthropic/claude-haiku-4.5`)
+- **System Prompt**: Edit the instructions sent with every query
+
+Changes save automatically and take effect on your next query.
+
+#### Tips & Best Practices
+
+- **Be specific**: "Count my open todos" vs "analyze todos" → different LLM behavior
+- **Use relevant scopes**: `@today @work` instead of `@week` to reduce tokens and cost
+- **Multi-line for complex**: Use `<? >?` when your instruction needs multiple lines
+- **Reset defaults**: Settings → System Prompt → Reset button
+
+#### Undo & Safety
+
+- Press `⌘Z` or use the undo button to revert last query result (3-level history)
+- Queries are validated before sending (catches scope errors)
+
+## Scope System (Hierarchical Tag-Based Scoping)
+
+ExoCortex uses a modern **hierarchical scope system** with explicit open/close markers for precise LLM context extraction:
+
+```markdown
+<<2026-01-08               Block-open (date root)
+  Morning work session
+  
+  <<meeting                Nested block
+    Attendees: Alice, Bob
+    - [ ] Review designs !!urgent
+  >>meeting                Block-close
+  
+  Evening notes !!personal
+>>2026-01-08               Block-close
+```
+
+### Tag Syntax
+
+| Syntax | Scope | Example | Use |
+|--------|-------|---------|-----|
+| `<<tag` / `>>tag` | Multi-line block | `<<meeting ...  >>meeting` | Documents, meetings, sections |
+| `!!tag` | Single line only | `- [ ] Task !!urgent` | Metadata, labels, inline tags |
+
+### Query System (AND Logic)
+
+Use `@tag` notation in prompts to query scopes:
+
+```markdown
+#p @2026-01-08 @work summarize my work today
+#p @meeting !!urgent what's the priority item?
+```
+
+- `@` prefix denotes a scope query
+- Multiple tags use AND logic (all must match)
+- Validation happens before LLM query (catches errors)
+
+### Validation
+
+- **Before-query**: Last 10 days validation (automatic)
+- **Manual check**: "Check Scopes" menu item validates full document
+- Clear error messages with suggestions for fixes
+
+See [`ARCHITECTURE.md`](ARCHITECTURE.md) and [`plans/SCOPE_SYSTEM_COMPLETION_SUMMARY.md`](plans/SCOPE_SYSTEM_COMPLETION_SUMMARY.md) for detailed documentation.
 
 ## Architecture
 
@@ -142,9 +249,16 @@ ExoCortex/
 ├── LLMConfig.swift         # AI configuration
 ├── NamedView.swift         # Sidebar view model
 ├── TagQueryParser.swift    # Filter query parsing
-├── ContextResolver.swift   # AI context extraction
-├── StyledTextEditor.swift  # Markdown text editor
-└── SettingsView.swift      # App settings UI
+├── TextKit2View.swift      # Modern text editor UI
+├── SettingsView.swift      # App settings UI
+└── Scoping/                # Hierarchical scope system
+    ├── ScopeParser.swift           # Core parser (<<tag / >>tag / !!tag)
+    ├── ScopeBlock.swift            # Content block with scope path
+    ├── ScopeError.swift            # Validation errors
+    ├── ScopeQuery.swift            # Query parsing (@tag)
+    ├── ScopeValidator.swift        # Validation engine
+    ├── ScopeContextResolver.swift  # LLM integration
+    └── ValidationSheet.swift       # Error UI
 ```
 
 ## Security
