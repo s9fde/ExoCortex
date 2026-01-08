@@ -79,6 +79,8 @@ final class LogViewModel {
     var saveStatus: SaveStatus = .idle
     var isFetching = false
     private(set) var canUndoLLM = false
+    var showValidationSheet = false
+    var validationResult: ValidationResult?
 
     // MARK: - Dependencies
     
@@ -86,7 +88,8 @@ final class LogViewModel {
     private let keychain: KeychainService
     private let parser = TagQueryParser()
     private let openRouter = OpenRouterService()
-    private let contextResolver = ContextResolver()
+    private let scopeResolver = ScopeContextResolver()
+    private let llmQueryDetector = LLMQueryDetector()
     
     // MARK: - Private State
     
@@ -98,10 +101,6 @@ final class LogViewModel {
     // LLM Undo Stack
     private var llmUndoStack: [LLMUndoEntry] = []
     private let maxUndoLevels = 3
-    
-    // Edit Mode State
-    private var editPromptLineIndex: Int?
-    private var editRawPrompt: String = ""  // Store raw prompt to re-resolve at apply time
 
     // MARK: - Initialization
     
@@ -122,6 +121,7 @@ final class LogViewModel {
         refreshBiometricStatus()
         Task {
             await loadAPIKeyFromKeychain(initialLoad: true)
+            await loadLLMConfigFromKeychain()
         }
     }
 
@@ -360,9 +360,6 @@ final class LogViewModel {
         fetchTask?.cancel()
         fetchTask = nil
         isFetching = false
-        // Reset edit mode state if cancelled mid-edit
-        editPromptLineIndex = nil
-        editRawPrompt = ""
     }
     
     // MARK: - LLM Undo
@@ -431,7 +428,7 @@ final class LogViewModel {
         // Note: No more auto-save debounce - saves only on focus lost, lock, or app close
         // This conforms to Apple HID standards for document-based apps where saving
         // is explicit or tied to lifecycle events rather than every keystroke.
-        detectAndProcessPrompt(oldText: oldValue, newText: fullText)
+        detectAndProcessLLMQuery(oldText: oldValue, newText: fullText)
         previousText = fullText
     }
 
@@ -543,253 +540,154 @@ final class LogViewModel {
         UserDefaults.standard.set(savedFilters, forKey: "savedFilters")
     }
     
-    // MARK: - LLM Integration
     
-    /// Detected prompt type
-    private enum PromptType {
-        case readOnly   // #p or #ro - append response
-        case edit       // #do - replace scoped section
+    
+    // MARK: - LLM Configuration Management
+    
+    /// Load LLM model and system prompt from keychain on app startup
+    private func loadLLMConfigFromKeychain() async {
+        do {
+            // Load model
+            if let model = try await keychain.loadLLMModel() {
+                LLMConfig.activeModel = model
+            }
+            
+            // Load system prompt
+            if let prompt = try await keychain.loadSystemPrompt() {
+                LLMConfig.activeSystemPrompt = prompt
+            }
+        } catch {
+            // Silently fail - use defaults
+            print("Failed to load LLM config: \(error)")
+        }
     }
     
-    private func detectAndProcessPrompt(oldText: String, newText: String) {
-        // Guard against fetch operations (prevents infinite recursion)
+    /// Save new LLM model to keychain and update config
+    func saveLLMModel(_ model: String) {
+        LLMConfig.activeModel = model
+        Task {
+            do {
+                try await keychain.saveLLMModel(model)
+            } catch {
+                print("Failed to save LLM model: \(error)")
+            }
+        }
+    }
+    
+    /// Save new system prompt to keychain and update config
+    func saveSystemPrompt(_ prompt: String) {
+        LLMConfig.activeSystemPrompt = prompt
+        Task {
+            do {
+                try await keychain.saveSystemPrompt(prompt)
+            } catch {
+                print("Failed to save system prompt: \(error)")
+            }
+        }
+    }
+    
+    // MARK: - LLM Query Processing (? queries)
+    
+    /// Detect and process new LLM queries (?? and <? >?)
+    private func detectAndProcessLLMQuery(oldText: String, newText: String) {
+        // Guard against fetch operations
         guard !isFetching else { return }
         
-        // Check if a newline was added (Enter key pressed)
+        // Check if a newline was added
         let oldNewlineCount = oldText.filter { $0 == "\n" }.count
         let newNewlineCount = newText.filter { $0 == "\n" }.count
         guard newNewlineCount > oldNewlineCount else { return }
         
-        let lines = newText.components(separatedBy: "\n")
+        // Detect completed query
+        guard let query = llmQueryDetector.detectCompletedQuery(oldText: oldText, newText: newText) else { return }
         
-        // Find unprocessed prompts (#p, #ro, #do)
-        for (index, line) in lines.enumerated() {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            let lower = trimmed.lowercased()
-            
-            // Determine prompt type and tag length
-            let (promptType, tagLength): (PromptType?, Int)
-            if lower.hasPrefix(LLMConfig.editTag.lowercased()) {
-                (promptType, tagLength) = (.edit, LLMConfig.editTag.count)
-            } else if lower.hasPrefix(LLMConfig.readOnlyTag.lowercased()) {
-                (promptType, tagLength) = (.readOnly, LLMConfig.readOnlyTag.count)
-            } else if lower.hasPrefix(LLMConfig.promptTag.lowercased()) {
-                (promptType, tagLength) = (.readOnly, LLMConfig.promptTag.count)
-            } else {
-                continue
-            }
-            
-            guard let type = promptType else { continue }
-            guard index + 1 < lines.count else { continue }
-            
-            let nextLine = lines[index + 1].trimmingCharacters(in: .whitespaces).lowercased()
-            
-            // Skip if already processed or currently processing
-            let lowerLine = line.lowercased()
-            if lowerLine.contains("[processing...]") ||
-               lowerLine.contains("[edit applied]") ||
-               nextLine.hasPrefix(LLMConfig.responseTag.lowercased()) ||
-               nextLine.hasPrefix(LLMConfig.errorTag.lowercased()) {
-                continue
-            }
-            
-            // Extract prompt text after tag
-            guard trimmed.count > tagLength else { continue }
-            
-            let promptIndex = trimmed.index(trimmed.startIndex, offsetBy: tagLength)
-            let promptText = String(trimmed[promptIndex...]).trimmingCharacters(in: .whitespaces)
-            guard !promptText.isEmpty else { continue }
-            
-            switch type {
-            case .readOnly:
-                processReadOnlyPrompt(promptText)
-            case .edit:
-                processEditPrompt(promptText, promptLineIndex: index)
-            }
-            return // Process one at a time
-        }
+        // Process the query
+        processLLMQuery(query)
     }
     
-    // MARK: - Read-Only Mode (#p, #ro)
-    
-    private func processReadOnlyPrompt(_ rawPrompt: String) {
-        cancelFetch()
-        
-        // Resolve @-references to context
-        let resolution = contextResolver.resolve(prompt: rawPrompt, fullText: fullText)
-        
-        // Build full message with context
-        let fullMessage: String
-        if let context = resolution.context {
-            fullMessage = """
-            Context from work log:
-            \(context)
-            
-            User prompt: \(resolution.cleanPrompt)
-            """
-        } else {
-            fullMessage = resolution.cleanPrompt
-        }
-        
-        // Insert response tag and set fetching flag
-        appendToText("\(LLMConfig.responseTag) ")
+    /// Process a detected LLM query
+    private func processLLMQuery(_ query: LLMQuery) {
         isFetching = true
         
-        fetchTask = Task { [weak self] in
-            await self?.fetchReadOnlyResponse(message: fullMessage)
-        }
-    }
-    
-    private func fetchReadOnlyResponse(message: String) async {
-        do {
-            let response = try await openRouter.fetch(userMessage: message)
-            appendToText(response)
-            appendToText("\n---\n")
-            isFetching = false
-        } catch {
-            appendToText("\n\(LLMConfig.errorTag) \(error.localizedDescription)\n---\n")
-            isFetching = false
-        }
-    }
-    
-    // MARK: - Edit Mode (#do)
-    
-    private func processEditPrompt(_ rawPrompt: String, promptLineIndex: Int) {
-        cancelFetch()
+        // Extract scope references
+        let scopes = extractScopeReferences(from: query.promptText)
         
-        // Set fetching flag IMMEDIATELY to prevent re-entry during error handling
-        isFetching = true
+        // Get clean prompt (without @scopes)
+        let cleanPrompt = extractCleanPrompt(from: query.promptText, scopes: scopes)
         
-        // Resolve @-references to validate scope before proceeding
-        let resolution = contextResolver.resolve(prompt: rawPrompt, fullText: fullText)
-        
-        // Validate scope for edit mode
-        if resolution.scopeCount == 0 {
-            appendToText("\n\(LLMConfig.errorTag) #do requires a scope like @today, @week, or @last:N\n")
+        guard !scopes.isEmpty else {
+            fullText += "\n[LLM Error] Query requires at least one @scope reference like @2026-01-08\n"
             isFetching = false
             return
         }
         
-        if resolution.scopeCount > 1 {
-            appendToText("\n\(LLMConfig.errorTag) #do supports only one scope (found \(resolution.scopeCount)). Use a single @scope.\n")
+        guard !cleanPrompt.isEmpty else {
+            fullText += "\n[LLM Error] Empty prompt - add text with your question\n"
             isFetching = false
             return
         }
         
-        if !resolution.isEditableScope {
-            appendToText("\n\(LLMConfig.errorTag) #do requires a contiguous scope (@today, @week, @last:N, @log). @tag and @todos are non-contiguous.\n")
+        // Resolve scopes
+        let resolution = scopeResolver.resolveContext(from: query.promptText, in: fullText)
+        
+        if resolution.hasErrors {
+           validationResult = ValidationResult(
+               parseResult: ScopeParseResult(
+                   blocks: resolution.blocks,
+                   errors: resolution.validationErrors ?? []
+               ),
+               scope:  .lastDays(10)
+           )
+           showValidationSheet = true
+           isFetching = false
+           return
+        }
+        
+        guard let context = resolution.context, !context.isEmpty else {
+            fullText += "\n[LLM Error] No content found for scopes: \(scopes.joined(separator: ", "))\n"
             isFetching = false
             return
         }
         
-        guard let context = resolution.context else {
-            appendToText("\n\(LLMConfig.errorTag) Scope is empty - nothing to edit.\n")
-            isFetching = false
-            return
-        }
+        // Push undo checkpoint
+        let labelPreview = String(cleanPrompt.prefix(40))
+        pushLLMUndo(label: "Query: \(labelPreview)...")
         
-        // Push undo state BEFORE making changes
-        let labelPreview = String(resolution.cleanPrompt.prefix(40))
-        pushLLMUndo(label: "Before: \(labelPreview)...")
-        
-        // Mark the #do line IMMEDIATELY as processing to prevent re-detection
-        markPromptLineAsProcessing(promptLineIndex)
-        
-        // Build edit message
-        let editMessage = """
-        Modify this text according to the instruction below.
-        Return ONLY the modified text, nothing else.
-        
-        TEXT TO MODIFY:
+        // Build message
+        let message = """
         \(context)
         
-        INSTRUCTION: \(resolution.cleanPrompt)
+        User instruction: \(cleanPrompt)
         """
         
-        // Store edit state - save raw prompt to re-resolve at apply time (race condition fix)
-        editPromptLineIndex = promptLineIndex
-        editRawPrompt = rawPrompt
-        
-        isFetching = true
-        
+        // Execute query
         fetchTask = Task { [weak self] in
-            await self?.fetchEditResponse(message: editMessage)
+            await self?.executeLLMQuery(message: message, isBlockQuery: query.isBlockQuery)
         }
     }
     
-    /// Mark a prompt line as being processed (prevents re-detection during fetch)
-    private func markPromptLineAsProcessing(_ lineIndex: Int) {
-        var lines = fullText.components(separatedBy: "\n")
-        if lineIndex < lines.count {
-            lines[lineIndex] = lines[lineIndex] + " [processing...]"
-            fullText = lines.joined(separator: "\n")
-        }
-    }
-    
-    private func fetchEditResponse(message: String) async {
+    /// Execute LLM query and append response
+    private func executeLLMQuery(message: String, isBlockQuery: Bool) async {
         do {
-            let response = try await openRouter.fetchEdit(userMessage: message)
+            let response = try await openRouter.fetch(userMessage: message)
             
-            // Apply the edit with the fetched response
-            await applyEdit(response: response)
+            // Append response
+            let formatted = response.trimmingCharacters(in: .whitespacesAndNewlines)
+            fullText += "\n\(formatted)\n"
+            
             isFetching = false
         } catch {
-            appendToText("\n\(LLMConfig.errorTag) \(error.localizedDescription)\n")
+            fullText += "\n[LLM Error] \(error.localizedDescription)\n"
             isFetching = false
         }
     }
     
-    private func applyEdit(response: String) async {
-        guard !editRawPrompt.isEmpty else { return }
-        
-        // Get the modified content, trimming any wrapper text the LLM might have added
-        var modifiedContent = response.trimmingCharacters(in: .whitespacesAndNewlines)
-        
-        // Strip markdown code block wrapper if LLM added one
-        if modifiedContent.hasPrefix("```") {
-            if let endOfFirstLine = modifiedContent.firstIndex(of: "\n") {
-                modifiedContent = String(modifiedContent[modifiedContent.index(after: endOfFirstLine)...])
-            }
-            if modifiedContent.hasSuffix("```") {
-                modifiedContent = String(modifiedContent.dropLast(3)).trimmingCharacters(in: .whitespacesAndNewlines)
-            }
+    /// Extract clean prompt text without @scope references
+    private func extractCleanPrompt(from text: String, scopes: [String]) -> String {
+        var result = text
+        for scope in scopes {
+            result = result.replacingOccurrences(of: "@\(scope)", with: "")
         }
-        
-        // CRITICAL: Re-resolve scope on CURRENT fullText to get accurate range
-        // This fixes race condition where user edits during fetch would corrupt text
-        let resolution = contextResolver.resolve(prompt: editRawPrompt, fullText: fullText)
-        
-        guard let range = resolution.contextRange else {
-            // Scope no longer valid - user may have edited it away
-            // Restore from undo stack (already pushed) and report error
-            _ = undoLLM()
-            appendToText("\n\(LLMConfig.errorTag) Edit failed - scope changed during processing. Undo applied.\n")
-            editPromptLineIndex = nil
-            editRawPrompt = ""
-            return
-        }
-        
-        // Replace the scoped section with modified content FIRST
-        var newText = fullText
-        newText.replaceSubrange(range, with: modifiedContent)
-        
-        // Then mark the #do line as complete (change [processing...] to [edit applied])
-        var lines = newText.components(separatedBy: "\n")
-        if let promptIndex = editPromptLineIndex, promptIndex < lines.count {
-            // Replace the processing marker with applied marker
-            lines[promptIndex] = lines[promptIndex].replacingOccurrences(of: " [processing...]", with: " [edit applied]")
-        }
-        newText = lines.joined(separator: "\n")
-        
-        fullText = newText
-        
-        // Reset edit state
-        editPromptLineIndex = nil
-        editRawPrompt = ""
-    }
-    
-    /// Append text without triggering prompt detection
-    private func appendToText(_ text: String) {
-        fullText += text
+        return result.trimmingCharacters(in: .whitespaces)
     }
 }
